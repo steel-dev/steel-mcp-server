@@ -2,6 +2,8 @@
 # Use a Node.js image with Puppeteer dependencies
 FROM node:22-alpine AS builder
 
+ARG NODE_TLS_REJECT_UNAUTHORIZED=0
+
 # Install necessary build tools
 RUN apk add --no-cache make gcc g++ python3
 

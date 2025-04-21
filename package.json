@@ -1,35 +1,35 @@
 {
-    "name": "@steel-dev/mcp-server",
-    "version": "0.0.1",
-    "description": "MCP server for browser automation using Steel and Puppeteer",
-    "license": "MIT",
-    "author": "Steel (https://steel.dev)",
-    "homepage": "https://steel.dev",
-    "bugs": "https://github.com/steel-dev/mcp-server/issues",
-    "type": "module",
-    "bin": {
-        "mcp-server-steel-puppeteer": "dist/index.js"
-    },
-    "files": [
-        "dist"
-    ],
-    "scripts": {
-        "build": "tsc && shx chmod +x dist/*.js",
-        "prepare": "npm run build",
-        "watch": "tsc --watch",
-        "start": "node dist/index.js",
-        "inspector": "npx @modelcontextprotocol/inspector dist/index.js"
-    },
-    "dependencies": {
-        "@modelcontextprotocol/inspector": "^0.3.0",
-        "@modelcontextprotocol/sdk": "1.0.1",
-        "dotenv": "^16.4.7",
-        "puppeteer": "^23.4.0",
-        "steel-sdk": "^0.1.0-beta.5",
-        "tiktoken": "^1.0.17"
-    },
-    "devDependencies": {
-        "shx": "^0.3.4",
-        "typescript": "^5.6.2"
-    }
+  "name": "@steel-dev/mcp-server",
+  "version": "0.0.1",
+  "description": "MCP server for browser automation using Steel and Puppeteer",
+  "license": "MIT",
+  "author": "Steel (https://steel.dev)",
+  "homepage": "https://steel.dev",
+  "bugs": "https://github.com/steel-dev/mcp-server/issues",
+  "type": "module",
+  "bin": {
+    "mcp-server-steel-puppeteer": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && shx chmod +x dist/*.js",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "inspector": "npx @modelcontextprotocol/inspector dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.1",
+    "@modelcontextprotocol/inspector": "^0.3.0",
+    "dotenv": "^16.4.7",
+    "puppeteer": "^23.4.0",
+    "steel-sdk": "^0.1.0-beta.5",
+    "tiktoken": "^1.0.17"
+  },
+  "devDependencies": {
+    "shx": "^0.3.4",
+    "typescript": "^5.6.2"
+  }
 }
