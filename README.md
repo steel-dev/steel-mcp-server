@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/steel-dev-steel-mcp-server-badge.png)](https://mseep.ai/app/steel-dev-steel-mcp-server)
+
 # Steel MCP Server
 
 [![smithery badge](https://smithery.ai/badge/@steel-dev/steel-mcp-server)](https://smithery.ai/server/@steel-dev/steel-mcp-server)
