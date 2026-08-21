@@ -1,5 +1,6 @@
 // ABOUTME: Builds a fake page-scoped CDP session from a declarative node tree, producing the exact
 // ABOUTME: Accessibility.getFullAXTree and DOMSnapshot.captureSnapshot payloads the pipeline joins.
+import { COMPUTED_STYLES } from '../../src/core/snapshot.js';
 import type { CdpEventParams, CdpSession } from '../../src/core/steel/cdp.js';
 
 /** One node in a fixture page. Omitting `bounds` models a node the layout engine never rendered. */
@@ -17,9 +18,23 @@ export interface FixtureNode {
     bounds?: [number, number, number, number];
     pointerEvents?: string;
     visibility?: string;
+    /** Computed styles beyond the defaults, such as an iframe's border and padding. */
+    computed?: Record<string, string>;
     /** AX properties such as level, checked, disabled. */
     properties?: Record<string, string | number | boolean>;
     children?: FixtureNode[];
+    /** The document this node holds, which makes it an iframe with its own frame and AX tree. */
+    frame?: FixtureFrame;
+}
+
+/** A document nested inside a fixture page, with its own coordinate space and node ids. */
+export interface FixtureFrame {
+    root: FixtureNode;
+    frameId: string;
+    url?: string;
+    scroll?: { x: number; y: number };
+    /** Models a frame that went away between the DOM snapshot and the read of its tree. */
+    detached?: boolean;
 }
 
 export interface FixturePage {
@@ -38,6 +53,18 @@ interface FlatNode {
     parentIndex: number;
 }
 
+/** One document's worth of the fixture: its own nodes, indices and frame identity. */
+interface FixtureDocument {
+    frameId: string;
+    url: string;
+    scroll: { x: number; y: number };
+    flat: FlatNode[];
+    detached: boolean;
+    /** Which node of which document holds this one, absent on the top document. */
+    owner?: { documentIndex: number; nodeIndex: number };
+}
+
+/** Flattens one document, stopping at an iframe rather than walking into the document it holds. */
 function flatten(root: FixtureNode): FlatNode[] {
     const flat: FlatNode[] = [];
     const walk = (node: FixtureNode, parentIndex: number): void => {
@@ -47,6 +74,35 @@ function flatten(root: FixtureNode): FlatNode[] {
     };
     walk(root, -1);
     return flat;
+}
+
+/** Splits a fixture page into one entry per frame, top document first, with per-document indices. */
+function collectDocuments(page: FixturePage): FixtureDocument[] {
+    const documents: FixtureDocument[] = [
+        {
+            frameId: page.frameId ?? 'main-frame',
+            url: page.url ?? 'https://example.com/',
+            scroll: page.scroll ?? { x: 0, y: 0 },
+            flat: flatten(page.root),
+            detached: false,
+        },
+    ];
+
+    for (let at = 0; at < documents.length; at++) {
+        for (const entry of documents[at]!.flat) {
+            const frame = entry.node.frame;
+            if (!frame) continue;
+            documents.push({
+                frameId: frame.frameId,
+                url: frame.url ?? 'https://example.com/frame',
+                scroll: frame.scroll ?? { x: 0, y: 0 },
+                flat: flatten(frame.root),
+                detached: frame.detached ?? false,
+                owner: { documentIndex: at, nodeIndex: entry.index },
+            });
+        }
+    }
+    return documents;
 }
 
 class StringTable {
@@ -63,8 +119,20 @@ class StringTable {
     }
 }
 
-/** The computed styles the snapshot pipeline asks DOMSnapshot for, in order. */
-export const REQUESTED_COMPUTED_STYLES = ['pointer-events', 'visibility', 'display', 'opacity'];
+/** The computed styles the snapshot pipeline asks DOMSnapshot for. Read back by position, so the
+ * fixture has to emit them in the order the pipeline requests them. */
+export const REQUESTED_COMPUTED_STYLES: readonly string[] = COMPUTED_STYLES;
+
+const DEFAULT_COMPUTED: Record<string, string> = {
+    'pointer-events': 'auto',
+    visibility: 'visible',
+    display: 'block',
+    opacity: '1',
+    'border-left-width': '0px',
+    'border-top-width': '0px',
+    'padding-left': '0px',
+    'padding-top': '0px',
+};
 
 function buildAxTree(flat: FlatNode[]) {
     const axNodes = flat
@@ -92,67 +160,80 @@ function buildAxTree(flat: FlatNode[]) {
     return { nodes: axNodes };
 }
 
-function buildDomSnapshot(flat: FlatNode[], page: FixturePage) {
+function buildDomSnapshot(documents: FixtureDocument[], page: FixturePage) {
     const table = new StringTable();
-    const layoutNodeIndex: number[] = [];
-    const layoutStyles: number[][] = [];
-    const layoutBounds: number[][] = [];
-    const inputValueIndex: number[] = [];
-    const inputValueValue: number[] = [];
-    const isClickableIndex: number[] = [];
 
-    for (const { node, index } of flat) {
-        if (node.inputValue !== undefined) {
-            inputValueIndex.push(index);
-            inputValueValue.push(table.intern(node.inputValue));
-        }
-        if (node.role === 'button' || node.role === 'link' || node.tag === 'BUTTON' || node.tag === 'A') {
-            isClickableIndex.push(index);
-        }
-        if (!node.bounds) continue;
-        layoutNodeIndex.push(index);
-        layoutStyles.push([
-            table.intern(node.pointerEvents ?? 'auto'),
-            table.intern(node.visibility ?? 'visible'),
-            table.intern('block'),
-            table.intern('1'),
-        ]);
-        layoutBounds.push([...node.bounds]);
-    }
+    // Which node in this document holds which other document, in the shape Chrome sends: a node
+    // index paired with the index of the held document in this same list.
+    const heldBy = documents.map(() => ({ index: [] as number[], value: [] as number[] }));
+    documents.forEach((document, at) => {
+        if (!document.owner) return;
+        const link = heldBy[document.owner.documentIndex]!;
+        link.index.push(document.owner.nodeIndex);
+        link.value.push(at);
+    });
 
-    return {
-        strings: table.strings,
-        documents: [
-            {
-                documentURL: table.intern(page.url ?? 'https://example.com/'),
-                title: table.intern(page.title ?? 'Example'),
-                baseURL: table.intern(page.url ?? 'https://example.com/'),
-                frameId: table.intern(page.frameId ?? 'main-frame'),
-                nodes: {
-                    parentIndex: flat.map(entry => entry.parentIndex),
-                    nodeType: flat.map(entry => (entry.node.tag === '#text' ? 3 : 1)),
-                    nodeName: flat.map(entry => table.intern(entry.node.tag)),
-                    nodeValue: flat.map(entry => table.intern(entry.node.attributes?.['#value'] ?? '')),
-                    backendNodeId: flat.map(entry => entry.node.backendNodeId),
-                    attributes: flat.map(entry =>
-                        Object.entries(entry.node.attributes ?? {})
-                            .filter(([name]) => name !== '#value')
-                            .flatMap(([name, value]) => [table.intern(name), table.intern(value)])
-                    ),
-                    inputValue: { index: inputValueIndex, value: inputValueValue },
-                    isClickable: { index: isClickableIndex },
-                },
-                layout: {
-                    nodeIndex: layoutNodeIndex,
-                    styles: layoutStyles,
-                    bounds: layoutBounds,
-                    text: layoutNodeIndex.map(() => -1),
-                },
-                scrollOffsetX: page.scroll?.x ?? 0,
-                scrollOffsetY: page.scroll?.y ?? 0,
+    const built = documents.map((document, at) => {
+        const { flat } = document;
+        const layoutNodeIndex: number[] = [];
+        const layoutStyles: number[][] = [];
+        const layoutBounds: number[][] = [];
+        const inputValueIndex: number[] = [];
+        const inputValueValue: number[] = [];
+        const isClickableIndex: number[] = [];
+
+        for (const { node, index } of flat) {
+            if (node.inputValue !== undefined) {
+                inputValueIndex.push(index);
+                inputValueValue.push(table.intern(node.inputValue));
+            }
+            if (node.role === 'button' || node.role === 'link' || node.tag === 'BUTTON' || node.tag === 'A') {
+                isClickableIndex.push(index);
+            }
+            if (!node.bounds) continue;
+            const computed: Record<string, string> = {
+                ...DEFAULT_COMPUTED,
+                'pointer-events': node.pointerEvents ?? DEFAULT_COMPUTED['pointer-events']!,
+                visibility: node.visibility ?? DEFAULT_COMPUTED.visibility!,
+                ...node.computed,
+            };
+            layoutNodeIndex.push(index);
+            layoutStyles.push(REQUESTED_COMPUTED_STYLES.map(name => table.intern(computed[name] ?? '')));
+            layoutBounds.push([...node.bounds]);
+        }
+
+        return {
+            documentURL: table.intern(document.url),
+            title: table.intern(at === 0 ? (page.title ?? 'Example') : ''),
+            baseURL: table.intern(document.url),
+            frameId: table.intern(document.frameId),
+            nodes: {
+                parentIndex: flat.map(entry => entry.parentIndex),
+                nodeType: flat.map(entry => (entry.node.tag === '#text' ? 3 : 1)),
+                nodeName: flat.map(entry => table.intern(entry.node.tag)),
+                nodeValue: flat.map(entry => table.intern(entry.node.attributes?.['#value'] ?? '')),
+                backendNodeId: flat.map(entry => entry.node.backendNodeId),
+                attributes: flat.map(entry =>
+                    Object.entries(entry.node.attributes ?? {})
+                        .filter(([name]) => name !== '#value')
+                        .flatMap(([name, value]) => [table.intern(name), table.intern(value)])
+                ),
+                inputValue: { index: inputValueIndex, value: inputValueValue },
+                isClickable: { index: isClickableIndex },
+                contentDocumentIndex: heldBy[at],
             },
-        ],
-    };
+            layout: {
+                nodeIndex: layoutNodeIndex,
+                styles: layoutStyles,
+                bounds: layoutBounds,
+                text: layoutNodeIndex.map(() => -1),
+            },
+            scrollOffsetX: document.scroll.x,
+            scrollOffsetY: document.scroll.y,
+        };
+    });
+
+    return { strings: table.strings, documents: built };
 }
 
 export interface FixtureSession {
@@ -178,7 +259,7 @@ export function fixtureSession(initialPage: FixturePage): FixtureSession {
             const stub = stubs.get(method);
             if (stub) return stub(params) as T;
 
-            const flat = flatten(page.root);
+            const documents = collectDocuments(page);
             switch (method) {
                 case 'Page.getFrameTree':
                     return {
@@ -190,10 +271,17 @@ export function fixtureSession(initialPage: FixturePage): FixtureSession {
                             },
                         },
                     } as T;
-                case 'Accessibility.getFullAXTree':
-                    return buildAxTree(flat) as T;
+                case 'Accessibility.getFullAXTree': {
+                    // Chrome answers for one frame: the page's own when asked for no frame in
+                    // particular, and it refuses a frame it does not have.
+                    const asked = params.frameId as string | undefined;
+                    const document =
+                        asked === undefined ? documents[0] : documents.find(entry => entry.frameId === asked);
+                    if (!document || document.detached) throw new Error('Frame with the given frameId is not found.');
+                    return buildAxTree(document.flat) as T;
+                }
                 case 'DOMSnapshot.captureSnapshot':
-                    return buildDomSnapshot(flat, page) as T;
+                    return buildDomSnapshot(documents, page) as T;
                 case 'Page.getLayoutMetrics':
                     return {
                         cssLayoutViewport: {

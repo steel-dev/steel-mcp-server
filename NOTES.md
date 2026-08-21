@@ -350,3 +350,49 @@ deployment sitting behind a Traefik reverse proxy.
   returns `403 Invalid Host` means `STEEL_ALLOWED_HOSTS` disagrees with the Host the proxy forwards.
   `/healthz` is answered ahead of the allowlist precisely so a probe on an IP still passes, which is
   what lets the two diverge.
+
+## 10. What CDP reports about frames, and where an iframe's content really sits
+
+Measured 2026-08-21 against Google Chrome 148 headless, over a page nesting three same-origin
+documents, plus a live third-party form-engine page in the wild. Every claim below was checked in both
+directions: the fixture was scrolled and unscrolled, and the computed result compared against
+`DOM.getBoxModel` on the same node.
+
+- **`Accessibility.getFullAXTree` answers for exactly one frame.** Called with no `frameId` it
+  returns the page's own document and stops at every `<iframe>`, which appears as a childless
+  `Iframe` node — same-origin or not. Called with `frameId` it returns that frame and stops at the
+  same boundary. An unknown frame is an error, not an empty tree: `Frame with the given frameId is
+  not found.` Reading a page with frames therefore takes one call per frame.
+- **`DOMSnapshot.captureSnapshot` already returns every same-process document**, each carrying its
+  own `frameId`, `scrollOffsetX/Y` and node table, and `nodes.contentDocumentIndex` names the
+  document each `<iframe>` holds by its index in that same list. So the frame tree, the geometry and
+  the owner links all arrive in the call the snapshot pipeline already makes; `Page.getFrameTree` and
+  `DOM.getFrameOwner` are not needed for it, and neither is `DOM.enable`.
+- **`layout.bounds` are per-document, unscrolled coordinates.** Scrolling the top page, a middle
+  frame and an inner frame by 40, 45 and 50 pixels left every `bounds` entry unchanged, while
+  `DOM.getBoxModel` for the same node moved by 135 — the sum of all three.
+- **A child document's origin in the page** is the owning element's content-box corner, accumulated
+  down the chain, less that child's own scroll:
+
+  ```
+  origin(top) = (0, 0)
+  origin(c)   = origin(parent) + ownerBounds.origin + borderWidth + padding - scroll(c)
+  ```
+
+  On the three-deep fixture this reproduced `DOM.getBoxModel` exactly (`80.4375, 180.6875`), and the
+  difference from the viewport-relative box model was exactly the summed scroll. The border term is
+  not optional: Chrome's default `<iframe>` border is 2px, so omitting it is wrong on almost every
+  page.
+- **Everything downstream already works with a child frame's `backendNodeId` on the page session.**
+  `DOM.getBoxModel` returns top-level coordinates, `DOM.getNodeForLocation` at that point hit-tests
+  back to the same node, and a dispatched pointer event lands in the frame. No per-frame session and
+  no coordinate translation are needed to act on what the descent finds.
+- **Out-of-process frames are a different problem.** With site isolation on, a cross-origin frame is
+  a separate target: it is absent from `Page.getFrameTree` on the page session and absent from the
+  DOM snapshot's documents, so none of the above reaches it. Its `src` attribute is still in the
+  parent document, which is enough to navigate to it directly.
+- **The form-engine page that prompted this is same-origin.** A hosted form engine of the common
+  shape — `…/service/<name>` embedding `…/render/?iframe_id=…` on the **same host**, which then writes
+  a second frame from script — puts 657 AX nodes behind one `Iframe` leaf. What looked like a
+  cross-origin problem was only ever the missing descent. `tests/browser/frame-snapshot.browser.test.ts`
+  reproduces that shape end to end.

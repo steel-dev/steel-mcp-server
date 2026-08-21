@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SteelToolError } from '../../src/core/errors.js';
 import { findInSnapshot, identityChanged, PageState, renderSnapshot } from '../../src/core/snapshot.js';
-import { type FixtureNode, type FixturePage, fixtureSession } from '../helpers/cdp-fixture.js';
+import { type FixtureFrame, type FixtureNode, type FixturePage, fixtureSession } from '../helpers/cdp-fixture.js';
 
 function page(children: FixtureNode[], overrides: Partial<FixturePage> = {}): FixturePage {
     return {
@@ -28,6 +28,54 @@ const BUTTON: FixtureNode = {
     role: 'button',
     name: 'Save',
     bounds: [10, 20, 80, 30],
+};
+
+/** The form engine's own document, the shape a hosted form renders in. */
+function formFrame(children: FixtureNode[], overrides: Partial<FixtureFrame> = {}): FixtureFrame {
+    return {
+        frameId: 'frame-1',
+        url: 'https://forms.example.com/render',
+        root: {
+            tag: 'HTML',
+            backendNodeId: 99,
+            role: 'RootWebArea',
+            name: 'Fill form',
+            bounds: [0, 0, 800, 600],
+            children,
+        },
+        ...overrides,
+    };
+}
+
+/** Sits at (30, 40) with a 2px border and 4px padding, so its document starts at (36, 46). */
+function iframe(frame: FixtureFrame, overrides: Partial<FixtureNode> = {}): FixtureNode {
+    return {
+        tag: 'IFRAME',
+        backendNodeId: 20,
+        role: 'Iframe',
+        name: 'Report a problem',
+        bounds: [30, 40, 800, 600],
+        computed: {
+            'border-left-width': '2px',
+            'border-top-width': '2px',
+            'border-right-width': '2px',
+            'border-bottom-width': '2px',
+            'padding-left': '4px',
+            'padding-top': '4px',
+            'padding-right': '4px',
+            'padding-bottom': '4px',
+        },
+        frame,
+        ...overrides,
+    };
+}
+
+const FRAME_FIELD: FixtureNode = {
+    tag: 'INPUT',
+    backendNodeId: 100,
+    role: 'textbox',
+    name: 'Address',
+    bounds: [10, 20, 150, 20],
 };
 
 describe('PageState.capture — which nodes earn a ref', () => {
@@ -165,6 +213,179 @@ describe('PageState.capture — tree noise', () => {
         expect(snapshot.text).not.toContain('invalid');
         expect(snapshot.text).not.toContain('disabled');
         expect(snapshot.text).toContain('[level=2]');
+    });
+});
+
+describe('PageState.capture — frames', () => {
+    it('gives a ref to a control inside a child frame', async () => {
+        const { session } = fixtureSession(page([iframe(formFrame([FRAME_FIELD]))]));
+        const snapshot = await new PageState().capture(session, {});
+        const field = snapshot.nodes.find(node => node.name === 'Address');
+        expect(field?.ref, 'a control inside an iframe must be targetable').toBeDefined();
+    });
+
+    it('nests a frame under the iframe element that holds it', async () => {
+        const { session } = fixtureSession(page([iframe(formFrame([FRAME_FIELD]))]));
+        const snapshot = await new PageState().capture(session, {});
+        const holder = snapshot.nodes.find(node => node.role === 'Iframe');
+        const field = snapshot.nodes.find(node => node.name === 'Address');
+        expect(holder).toBeDefined();
+        expect(field?.depth, 'the frame content sits below the iframe').toBeGreaterThan(holder?.depth ?? 0);
+    });
+
+    it("places a frame node in page coordinates rather than the frame's own", async () => {
+        const { session } = fixtureSession(page([iframe(formFrame([FRAME_FIELD]))]));
+        const snapshot = await new PageState().capture(session, {});
+        // The field sits at (10, 20) inside a frame whose content starts at (36, 46) on the page.
+        expect(snapshot.nodes.find(node => node.name === 'Address')?.center).toEqual({ x: 121, y: 76 });
+    });
+
+    it("subtracts a scrolled frame's own offset, because its content has moved up", async () => {
+        const { session } = fixtureSession(page([iframe(formFrame([FRAME_FIELD], { scroll: { x: 0, y: 25 } }))]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Address')?.center).toEqual({ x: 121, y: 51 });
+    });
+
+    it('marks a frame node off-screen once its real page position is known', async () => {
+        // 700 is inside a 720-tall viewport on its own, and outside it once the frame is placed.
+        const deep = { ...FRAME_FIELD, bounds: [10, 700, 150, 20] as [number, number, number, number] };
+        const { session } = fixtureSession(page([iframe(formFrame([deep]))]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Address')?.inViewport).toBe(false);
+    });
+
+    it('keeps two frames apart when their node ids collide', async () => {
+        const second = formFrame([], {
+            frameId: 'frame-2',
+            root: {
+                tag: 'HTML',
+                backendNodeId: 199,
+                role: 'RootWebArea',
+                name: 'Second form',
+                bounds: [0, 0, 800, 600],
+                children: [{ ...FRAME_FIELD, backendNodeId: 200, name: 'Postcode' }],
+            },
+        });
+        const { session } = fixtureSession(
+            page([iframe(formFrame([FRAME_FIELD])), iframe(second, { backendNodeId: 21, name: 'Second' })])
+        );
+        const snapshot = await new PageState().capture(session, {});
+        const refs = ['Address', 'Postcode'].map(name => snapshot.nodes.find(node => node.name === name)?.ref);
+        expect(refs.filter(Boolean), 'both frames contribute their own control').toHaveLength(2);
+        expect(refs[0]).not.toBe(refs[1]);
+    });
+
+    it('reaches a control two frames deep', async () => {
+        const inner = formFrame([], {
+            frameId: 'frame-2',
+            root: {
+                tag: 'HTML',
+                backendNodeId: 299,
+                role: 'RootWebArea',
+                name: 'Inner',
+                bounds: [0, 0, 700, 500],
+                children: [{ ...FRAME_FIELD, backendNodeId: 300, name: 'Collection date' }],
+            },
+        });
+        const outer = formFrame([iframe(inner, { backendNodeId: 250, name: 'Renderer' })]);
+        const { session } = fixtureSession(page([iframe(outer)]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Collection date')?.ref).toBeDefined();
+    });
+
+    it('subtracts a horizontally scrolled frame too', async () => {
+        const { session } = fixtureSession(page([iframe(formFrame([FRAME_FIELD], { scroll: { x: 30, y: 0 } }))]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Address')?.center).toEqual({ x: 91, y: 76 });
+    });
+
+    it('clips to what the frame shows, which is its box less its border and padding', async () => {
+        // The frame's box is 100 tall from y=40, but 6px of that is border and padding, so its
+        // content runs from y=46 to y=94. A field at frame-y 90 lands at page-y 96, just outside.
+        const low = { ...FRAME_FIELD, bounds: [10, 90, 150, 20] as [number, number, number, number] };
+        const short = iframe(formFrame([low]), { bounds: [30, 40, 800, 100] });
+        const { session } = fixtureSession(page([short]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Address')?.inViewport).toBe(false);
+    });
+
+    it('keeps a node that fits inside the frame content box', async () => {
+        const fits = { ...FRAME_FIELD, bounds: [10, 40, 150, 20] as [number, number, number, number] };
+        const short = iframe(formFrame([fits]), { bounds: [30, 40, 800, 100] });
+        const { session } = fixtureSession(page([short]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Address')?.inViewport).toBe(true);
+    });
+
+    it('counts an out-of-process frame and offers its URL, since its content never arrives', async () => {
+        // A cross-origin frame has an Iframe node in the top tree but no document in the snapshot,
+        // which the fixture models as an IFRAME node holding no frame.
+        const foreign: FixtureNode = {
+            tag: 'IFRAME',
+            backendNodeId: 30,
+            role: 'Iframe',
+            name: 'Payment',
+            bounds: [0, 200, 400, 300],
+            attributes: { src: 'https://payments.example.com/checkout' },
+        };
+        const { session } = fixtureSession(page([foreign]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.unreadableFrames).toBe(1);
+        expect(snapshot.nodes.find(node => node.role === 'Iframe')?.properties?.url).toBe(
+            'https://payments.example.com/checkout'
+        );
+    });
+
+    it('does not read a frame painted at zero opacity', async () => {
+        const invisible = iframe(formFrame([FRAME_FIELD]), { computed: { opacity: '0' } });
+        const { session } = fixtureSession(page([invisible]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Address')).toBeUndefined();
+    });
+
+    it('marks a node scrolled out of sight inside its frame as off-screen', async () => {
+        // 500 is inside the 720-tall viewport once the frame is placed, and below the frame's own
+        // 100px box, so it is not on screen however the page coordinates read.
+        const below = { ...FRAME_FIELD, bounds: [10, 500, 150, 20] as [number, number, number, number] };
+        const short = iframe(formFrame([below]), { bounds: [30, 0, 800, 100] });
+        const { session } = fixtureSession(page([short]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Address')?.inViewport).toBe(false);
+    });
+
+    it('does not read a frame its owner never laid out', async () => {
+        const hidden = iframe(formFrame([FRAME_FIELD]), { bounds: [0, 0, 0, 0] });
+        const fixture = fixtureSession(page([BUTTON, hidden]));
+        const snapshot = await new PageState().capture(fixture.session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Address')).toBeUndefined();
+        expect(fixture.sent.filter(call => call.method === 'Accessibility.getFullAXTree')).toHaveLength(1);
+    });
+
+    it('counts a frame it could not read, rather than dropping it in silence', async () => {
+        const gone = formFrame([], { frameId: 'frame-2', detached: true });
+        const { session } = fixtureSession(page([iframe(gone, { backendNodeId: 22, name: 'Advert' })]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.unreadableFrames).toBe(1);
+    });
+
+    it('reports no unreadable frames on a page whose frames all answered', async () => {
+        const { session } = fixtureSession(page([iframe(formFrame([FRAME_FIELD]))]));
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.unreadableFrames).toBe(0);
+    });
+
+    it('keeps the rest of the page when a frame detaches mid-capture', async () => {
+        const gone = formFrame([{ ...FRAME_FIELD, backendNodeId: 400, name: 'Gone' }], {
+            frameId: 'frame-2',
+            detached: true,
+        });
+        const { session } = fixtureSession(
+            page([BUTTON, iframe(formFrame([FRAME_FIELD])), iframe(gone, { backendNodeId: 22, name: 'Advert' })])
+        );
+        const snapshot = await new PageState().capture(session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Save')?.ref, 'the page survives').toBeDefined();
+        expect(snapshot.nodes.find(node => node.name === 'Address')?.ref, 'the live frame survives').toBeDefined();
+        expect(snapshot.nodes.find(node => node.name === 'Gone')).toBeUndefined();
     });
 });
 

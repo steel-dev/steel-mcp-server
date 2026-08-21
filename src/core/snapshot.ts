@@ -7,7 +7,22 @@ import type { CdpSession } from './steel/cdp.js';
 import { defangMarkdownLinks, isSensitiveField, redactSensitiveValue, stripInvisible } from './untrusted.js';
 
 /** The computed styles the pipeline needs to decide whether a node can be targeted. */
-const COMPUTED_STYLES = ['pointer-events', 'visibility', 'display', 'opacity'] as const;
+export const COMPUTED_STYLES = [
+    'pointer-events',
+    'visibility',
+    'display',
+    'opacity',
+    // An iframe's viewport is its element box less its border and padding, so placing a child
+    // frame's nodes in the page, and knowing how much of that frame is on screen, needs all eight.
+    'border-left-width',
+    'border-top-width',
+    'border-right-width',
+    'border-bottom-width',
+    'padding-left',
+    'padding-top',
+    'padding-right',
+    'padding-bottom',
+] as const;
 
 /** One node of a rendered snapshot. Only nodes with a `ref` can be targeted by an action. */
 export interface SnapshotNode {
@@ -39,6 +54,8 @@ export interface PageSnapshot {
     text: string;
     /** Nodes omitted from `text` because the budget ran out; paginate with a cursor. */
     truncated: boolean;
+    /** Frames whose tree could not be read, so their controls are missing from `nodes`. */
+    unreadableFrames: number;
 }
 
 export interface CaptureOptions {
@@ -142,31 +159,56 @@ const USEFUL_PROPERTIES = new Set([
 
 const DEFAULT_MAX_NODES = 1_500;
 
+/**
+ * How many of a page's frames are read.
+ *
+ * Every frame costs a round trip and a full accessibility tree buffered in memory, and the page
+ * chooses how many frames it has: a hostile one can open hundreds. Real pages sit far below this.
+ */
+const MAX_FRAMES_READ = 24;
+
 function asString(value: unknown): string {
     return typeof value === 'string' ? value : value === undefined || value === null ? '' : String(value);
 }
 
-/** Reads the DOMSnapshot payload into a per-backendNodeId fact table. */
-function readDomFacts(payload: unknown): Map<number, DomFacts> {
-    const facts = new Map<number, DomFacts>();
-    const snapshot = payload as {
-        strings?: string[];
-        documents?: Array<{
-            nodes?: {
-                nodeName?: number[];
-                backendNodeId?: number[];
-                attributes?: number[][];
-                inputValue?: { index?: number[]; value?: number[] };
-                isClickable?: { index?: number[] };
-            };
-            layout?: { nodeIndex?: number[]; styles?: number[][]; bounds?: number[][] };
-        }>;
-    };
+/** One frame's document: its own nodes, and how it hangs off the document that embeds it. */
+interface DomDocument {
+    frameId: string;
+    /** Bounds here are still in this document's own coordinates. */
+    facts: Map<number, DomFacts>;
+    scroll: { x: number; y: number };
+    /** The `<iframe>` element holding this document, absent on the top document. */
+    owner?: { backendNodeId: number; parentFrameId: string } | undefined;
+    /** The frame each `<iframe>` in this document holds, by that element's backend node id. */
+    childFrameByOwner: Map<number, string>;
+}
+
+interface RawSnapshot {
+    strings?: string[];
+    documents?: Array<{
+        frameId?: number;
+        scrollOffsetX?: number;
+        scrollOffsetY?: number;
+        nodes?: {
+            nodeName?: number[];
+            backendNodeId?: number[];
+            attributes?: number[][];
+            inputValue?: { index?: number[]; value?: number[] };
+            isClickable?: { index?: number[] };
+            contentDocumentIndex?: { index?: number[]; value?: number[] };
+        };
+        layout?: { nodeIndex?: number[]; styles?: number[][]; bounds?: number[][] };
+    }>;
+}
+
+/** Reads the DOMSnapshot payload into one entry per frame document, in the order Chrome sent them. */
+function readDomDocuments(payload: unknown): DomDocument[] {
+    const snapshot = payload as RawSnapshot;
     const strings = snapshot.strings ?? [];
     const text = (index: number | undefined): string =>
         index === undefined || index < 0 ? '' : (strings[index] ?? '');
 
-    for (const document of snapshot.documents ?? []) {
+    const documents: DomDocument[] = (snapshot.documents ?? []).map(document => {
         const nodes = document.nodes ?? {};
         const backendIds = nodes.backendNodeId ?? [];
         const inputValues = new Map<number, string>();
@@ -176,7 +218,7 @@ function readDomFacts(payload: unknown): Map<number, DomFacts> {
             inputValues.set(nodeIndex, text(inputValue[at]));
         });
 
-        const clickable = new Set(document.nodes?.isClickable?.index ?? []);
+        const clickable = new Set(nodes.isClickable?.index ?? []);
 
         const layoutByNode = new Map<number, { styles: number[]; bounds: number[] }>();
         const layoutNodeIndex = document.layout?.nodeIndex ?? [];
@@ -187,6 +229,7 @@ function readDomFacts(payload: unknown): Map<number, DomFacts> {
             });
         });
 
+        const facts = new Map<number, DomFacts>();
         backendIds.forEach((backendNodeId, nodeIndex) => {
             const attributePairs = nodes.attributes?.[nodeIndex] ?? [];
             const attributes: Record<string, string> = {};
@@ -213,8 +256,160 @@ function readDomFacts(payload: unknown): Map<number, DomFacts> {
                 clickable: clickable.has(nodeIndex),
             });
         });
+
+        return {
+            frameId: text(document.frameId),
+            facts,
+            scroll: { x: document.scrollOffsetX ?? 0, y: document.scrollOffsetY ?? 0 },
+            childFrameByOwner: new Map<number, string>(),
+        };
+    });
+
+    // Chrome names the document each `<iframe>` holds by its index in this same list, which is the
+    // whole frame tree without a second round trip for it.
+    (snapshot.documents ?? []).forEach((document, at) => {
+        const link = document.nodes?.contentDocumentIndex;
+        const owners = link?.index ?? [];
+        const held = link?.value ?? [];
+        owners.forEach((nodeIndex, k) => {
+            const parent = documents[at];
+            const child = documents[held[k] ?? -1];
+            const backendNodeId = document.nodes?.backendNodeId?.[nodeIndex];
+            if (!parent || !child || backendNodeId === undefined) return;
+            parent.childFrameByOwner.set(backendNodeId, child.frameId);
+            child.owner = { backendNodeId, parentFrameId: parent.frameId };
+        });
+    });
+
+    return documents;
+}
+
+function pixels(value: string | undefined): number {
+    const parsed = Number.parseFloat(value ?? '');
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** A rectangle in page coordinates. */
+interface Rect {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+}
+
+/** Where a frame's document sits in the page, and how much of it the page can actually show. */
+interface FramePlacement {
+    origin: { x: number; y: number };
+    /** The frame's own box, already clipped by every frame above it. Absent on the top document. */
+    visible?: Rect | undefined;
+}
+
+function intersect(a: Rect | undefined, b: Rect): Rect {
+    if (!a) return b;
+    return {
+        left: Math.max(a.left, b.left),
+        top: Math.max(a.top, b.top),
+        right: Math.min(a.right, b.right),
+        bottom: Math.min(a.bottom, b.bottom),
+    };
+}
+
+function overlaps(a: Rect, b: Rect): boolean {
+    return a.right > b.left && a.left < b.right && a.bottom > b.top && a.top < b.bottom;
+}
+
+/** Stands in for the top document, which no frame box clips. */
+const EVERYWHERE: Rect = {
+    left: Number.NEGATIVE_INFINITY,
+    top: Number.NEGATIVE_INFINITY,
+    right: Number.POSITIVE_INFINITY,
+    bottom: Number.POSITIVE_INFINITY,
+};
+
+/** Places every frame's document in the top document, so all their nodes share one space. */
+function resolveFramePlacements(documents: DomDocument[]): Map<string, FramePlacement> {
+    const byFrame = new Map(documents.map(document => [document.frameId, document]));
+    const placements = new Map<string, FramePlacement>();
+
+    const walking = new Set<string>();
+    const placementOf = (document: DomDocument): FramePlacement => {
+        const known = placements.get(document.frameId);
+        if (known) return known;
+        // Two documents sharing a frame id would make the walk up the tree loop. Chrome does not
+        // emit one, but the ids arrive from a page's own browser, so the walk stays total.
+        if (walking.has(document.frameId)) return { origin: { x: 0, y: 0 } };
+        walking.add(document.frameId);
+
+        const parent = document.owner ? byFrame.get(document.owner.parentFrameId) : undefined;
+        let placement: FramePlacement = { origin: { x: 0, y: 0 } };
+        if (document.owner && parent) {
+            const ownerFacts = parent.facts.get(document.owner.backendNodeId);
+            const [ownerX = 0, ownerY = 0, ownerWidth = 0, ownerHeight = 0] = ownerFacts?.bounds ?? [];
+            const above = placementOf(parent);
+            // Bounds are unscrolled document coordinates, so the frame's top-left corner is the
+            // owning element's content-box corner, and the document behind it is offset further by
+            // however far the frame is scrolled. See NOTES.md §10.
+            const corner = {
+                x:
+                    above.origin.x +
+                    ownerX +
+                    pixels(ownerFacts?.styles['border-left-width']) +
+                    pixels(ownerFacts?.styles['padding-left']),
+                y:
+                    above.origin.y +
+                    ownerY +
+                    pixels(ownerFacts?.styles['border-top-width']) +
+                    pixels(ownerFacts?.styles['padding-top']),
+            };
+            // The element's bounds are its border box, so its viewport is that box less the border
+            // and padding on all four sides. Chrome's default iframe border is 2px, so taking the
+            // border box whole is wrong on every page, not just styled ones.
+            const insetX =
+                pixels(ownerFacts?.styles['border-left-width']) +
+                pixels(ownerFacts?.styles['padding-left']) +
+                pixels(ownerFacts?.styles['border-right-width']) +
+                pixels(ownerFacts?.styles['padding-right']);
+            const insetY =
+                pixels(ownerFacts?.styles['border-top-width']) +
+                pixels(ownerFacts?.styles['padding-top']) +
+                pixels(ownerFacts?.styles['border-bottom-width']) +
+                pixels(ownerFacts?.styles['padding-bottom']);
+            placement = {
+                origin: { x: corner.x - document.scroll.x, y: corner.y - document.scroll.y },
+                // A frame shows only what fits in its own viewport, so a node further down the frame
+                // is out of sight even when that page position falls inside the browser viewport.
+                visible: intersect(above.visible, {
+                    left: corner.x,
+                    top: corner.y,
+                    right: corner.x + Math.max(0, ownerWidth - insetX),
+                    bottom: corner.y + Math.max(0, ownerHeight - insetY),
+                }),
+            };
+        }
+        placements.set(document.frameId, placement);
+        return placement;
+    };
+
+    for (const document of documents) placementOf(document);
+    return placements;
+}
+
+/** Flattens every frame's facts into one table, with child-frame bounds moved into page space. */
+function mergeDomFacts(documents: DomDocument[], placements: Map<string, FramePlacement>): Map<number, DomFacts> {
+    const merged = new Map<number, DomFacts>();
+    for (const document of documents) {
+        const origin = placements.get(document.frameId)?.origin ?? { x: 0, y: 0 };
+        for (const [backendNodeId, facts] of document.facts) {
+            const bounds = facts.bounds;
+            merged.set(
+                backendNodeId,
+                bounds === undefined
+                    ? facts
+                    : { ...facts, bounds: [bounds[0] + origin.x, bounds[1] + origin.y, bounds[2], bounds[3]] }
+            );
+        }
     }
-    return facts;
+    return merged;
 }
 
 /** Roles a model can meaningfully act on. Structural containers never earn a ref. */
@@ -241,17 +436,27 @@ const INTERACTIVE_ROLES = new Set([
     'PopUpButton',
 ]);
 
+/** Whether a frame is worth reading: laid out, not hidden, and not painted away. */
+function isVisibleFrame(facts: DomFacts | undefined): boolean {
+    return isRendered(facts) && pixels(facts.styles.opacity || '1') > 0;
+}
+
+/** Whether the layout engine gave the element a visible box of its own. */
+function isRendered(facts: DomFacts | undefined): facts is DomFacts {
+    if (!facts?.bounds) return false;
+    const [, , width, height] = facts.bounds;
+    if (width <= 0 || height <= 0) return false;
+    return facts.styles.visibility !== 'hidden' && facts.styles.visibility !== 'collapse';
+}
+
 /**
  * Decides whether a node may be targeted: it must be rendered, visible, accept pointer events,
  * and be something a person could actually interact with. A container that merely happens to be
  * visible gets no ref, so the model structurally cannot aim an action at the page background.
  */
 function isTargetable(facts: DomFacts | undefined, role: string, focusable: boolean): boolean {
-    if (!facts?.bounds) return false;
-    const [, , width, height] = facts.bounds;
-    if (width <= 0 || height <= 0) return false;
+    if (!isRendered(facts)) return false;
     if (facts.styles['pointer-events'] === 'none') return false;
-    if (facts.styles.visibility === 'hidden' || facts.styles.visibility === 'collapse') return false;
     if (NEVER_TARGETABLE_ROLES.has(role)) return false;
     return facts.clickable || focusable || INTERACTIVE_ROLES.has(role);
 }
@@ -409,7 +614,14 @@ export class PageState {
             this.currentLoaderId = loaderId;
         }
 
-        const facts = readDomFacts(domSnapshot);
+        const documents = readDomDocuments(domSnapshot);
+        const placements = resolveFramePlacements(documents);
+        const facts = mergeDomFacts(documents, placements);
+        const frameByOwner = new Map<number, string>();
+        for (const document of documents) {
+            for (const [owner, childFrameId] of document.childFrameByOwner) frameByOwner.set(owner, childFrameId);
+        }
+
         const viewport = metrics.cssLayoutViewport ?? {};
         const viewportTop = viewport.pageY ?? 0;
         const viewportLeft = viewport.pageX ?? 0;
@@ -419,15 +631,51 @@ export class PageState {
         this.snapshotCounter += 1;
         const snapshotId = `s${this.snapshotCounter}`;
 
-        const axNodes = axTree.nodes ?? [];
-        const byId = new Map(axNodes.map(node => [node.nodeId, node]));
-        const roots = axNodes.filter(node => node.parentId === undefined || !byId.has(node.parentId));
+        // getFullAXTree answers for one frame and stops at its iframes, so a control inside a frame
+        // is only reachable if that frame is asked for by name.
+        const topDocument = documents.find(document => document.owner === undefined);
+        const readable = documents.filter(
+            // A frame its owner never laid out, or painted at zero opacity, shows nothing a person
+            // could act on, and reading it would spend a round trip and part of the node budget on a
+            // tracking pixel or an invisible overlay.
+            document => document !== topDocument && isVisibleFrame(facts.get(document.owner?.backendNodeId ?? -1))
+        );
+        const childDocuments = readable.slice(0, MAX_FRAMES_READ);
+        let unreadableFrames = readable.length - childDocuments.length;
+
+        const axByFrame = new Map<string, AxNode[]>([[topDocument?.frameId ?? '', axTree.nodes ?? []]]);
+        const childTrees = await Promise.allSettled(
+            childDocuments.map(document =>
+                session.send<{ nodes?: AxNode[] }>('Accessibility.getFullAXTree', { frameId: document.frameId })
+            )
+        );
+        childTrees.forEach((result, at) => {
+            const document = childDocuments[at];
+            if (result.status !== 'fulfilled' || document === undefined) {
+                // Usually a frame that went away between the DOM snapshot and this call. The rest of
+                // the page is worth returning, but the caller has to know a frame is missing.
+                unreadableFrames += 1;
+                return;
+            }
+            axByFrame.set(document.frameId, result.value.nodes ?? []);
+        });
+
+        // Node ids are only unique within one frame's tree, so every lookup is keyed on both.
+        const axKey = (frameId: string, nodeId: string): string => `${frameId} ${nodeId}`;
+        const byId = new Map<string, AxNode>();
+        for (const [frameId, frameNodes] of axByFrame) {
+            for (const node of frameNodes) byId.set(axKey(frameId, node.nodeId), node);
+        }
+        const rootsOf = (frameId: string): AxNode[] =>
+            (axByFrame.get(frameId) ?? []).filter(
+                node => node.parentId === undefined || !byId.has(axKey(frameId, node.parentId))
+            );
 
         const nodes: SnapshotNode[] = [];
         const maxNodes = options.maxNodes ?? DEFAULT_MAX_NODES;
         let truncated = false;
 
-        const visit = (axNode: AxNode, depth: number, parentName: string): void => {
+        const visit = (axNode: AxNode, frameId: string, depth: number, parentName: string): void => {
             if (nodes.length >= maxNodes) {
                 truncated = true;
                 return;
@@ -435,11 +683,16 @@ export class PageState {
             if (options.maxDepth !== undefined && depth > options.maxDepth) return;
 
             const children = (axNode.childIds ?? [])
-                .map(id => byId.get(id))
+                .map(id => byId.get(axKey(frameId, id)))
                 .filter((n): n is AxNode => n !== undefined);
             if (axNode.ignored) {
-                // Ignored nodes contribute nothing, but their subtree can still be meaningful.
-                for (const child of children) visit(child, depth, parentName);
+                // Ignored nodes contribute nothing, but their subtree can still be meaningful — and
+                // for an iframe that subtree is a whole document, reached through the frame rather
+                // than through childIds.
+                for (const child of children) visit(child, frameId, depth, parentName);
+                const held =
+                    axNode.backendDOMNodeId === undefined ? undefined : frameByOwner.get(axNode.backendDOMNodeId);
+                if (held !== undefined) for (const root of rootsOf(held)) visit(root, held, depth, parentName);
                 return;
             }
 
@@ -459,12 +712,13 @@ export class PageState {
             const targetable = backendNodeId !== undefined && isTargetable(nodeFacts, role, focusable);
             const bounds = nodeFacts?.bounds;
             const center = bounds ? { x: bounds[0] + bounds[2] / 2, y: bounds[1] + bounds[3] / 2 } : undefined;
-            const inViewport = bounds
-                ? bounds[1] + bounds[3] > viewportTop &&
-                  bounds[1] < viewportBottom &&
-                  bounds[0] + bounds[2] > viewportLeft &&
-                  bounds[0] < viewportRight
-                : false;
+            const box = bounds
+                ? { left: bounds[0], top: bounds[1], right: bounds[0] + bounds[2], bottom: bounds[1] + bounds[3] }
+                : undefined;
+            const inViewport =
+                box !== undefined &&
+                overlaps(box, { left: viewportLeft, top: viewportTop, right: viewportRight, bottom: viewportBottom }) &&
+                overlaps(box, placements.get(frameId)?.visible ?? EVERYWHERE);
 
             let ref: string | undefined;
             if (targetable && backendNodeId !== undefined) {
@@ -509,6 +763,16 @@ export class PageState {
                 properties[property.name] = propertyValue as string | number | boolean;
             }
 
+            const embedded = backendNodeId === undefined ? undefined : frameByOwner.get(backendNodeId);
+            if (nodeFacts?.tagName === 'IFRAME' && embedded === undefined && isVisibleFrame(nodeFacts)) {
+                // A frame in another process is not in this snapshot at all, so its contents are
+                // simply absent. Say so and hand over its URL: opening that directly makes it the
+                // top document, which this pipeline can read in full.
+                unreadableFrames += 1;
+                const source = cleanText(nodeFacts.attributes.src ?? '');
+                if (source) properties.url = source;
+            }
+
             // A StaticText child that only repeats its parent's name is pure duplication.
             const repeatsParent = role === 'StaticText' && name !== '' && parentName.includes(name);
             const keep =
@@ -535,10 +799,15 @@ export class PageState {
                 });
             }
 
-            for (const child of children) visit(child, keep ? depth + 1 : depth, name || parentName);
+            const childDepth = keep ? depth + 1 : depth;
+            for (const child of children) visit(child, frameId, childDepth, name || parentName);
+
+            if (embedded !== undefined) {
+                for (const root of rootsOf(embedded)) visit(root, embedded, childDepth, name || parentName);
+            }
         };
 
-        for (const root of roots) visit(root, 0, '');
+        for (const root of rootsOf(topDocument?.frameId ?? '')) visit(root, topDocument?.frameId ?? '', 0, '');
 
         const snapshot: PageSnapshot = {
             snapshotId,
@@ -548,6 +817,7 @@ export class PageState {
             nodes,
             text: renderSnapshot(nodes),
             truncated,
+            unreadableFrames,
         };
         this.latest = snapshot;
         return snapshot;
