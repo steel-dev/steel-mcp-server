@@ -222,11 +222,13 @@ backends, and a browser suite that executes the app's runtime instead of asserti
 
 ## 7. The MCPB desktop bundle
 
-Measured 2026-08-04 against `@anthropic-ai/mcpb@2.1.2`, manifest schema **v0.4**.
+Measured 2026-08-04 against `@anthropic-ai/mcpb@2.1.2`, manifest schema **v0.4**. Counts re-measured
+2026-08-24 by a full `npm run pack:mcpb` on `2.0.0-rc.9`.
 
-- **The bundle is 2.0MB packed, 8.0MB unpacked, 938 files.** It carries four dependency trees —
-  `@modelcontextprotocol/server` (with `core` beneath it), `@opentelemetry/api`, `ws`, `zod` — and
-  nothing else. `npm install` in the staging tree resolves **5 packages**.
+- **The bundle is 2.0MB packed, 8.2MB unpacked, 969 files.** It carries five dependency trees —
+  `@modelcontextprotocol/server` (with `core` beneath it), `@opentelemetry/api`, `safe-regex2`, `ws`,
+  `zod` — and nothing else. `npm install` in the staging tree resolves **7 packages**. The staged
+  server then starts over real JSON-RPC and lists 16 tools before anything is packed.
 - **Narrowing the staged `package.json` beats deleting installed directories.** Deleting
   `node_modules/ioredis` left its six dependencies behind (`redis-parser`, `redis-errors`, `denque`,
   `cluster-key-slot`, `standard-as-callback`, `debug`), and `@modelcontextprotocol/node` dragged in
@@ -261,6 +263,10 @@ after the split. Same stdio server both times.
 |---|---|---|
 | Before | 85 | **68M** |
 | After | 5 | **17M** |
+| Now (rc.9, 2026-08-24) | 7 | **17M** |
+
+`safe-regex2` and its one transitive package are the difference between the split measurement and
+today: `steel_find` needs it to accept a caller's regex without a catastrophic-backtracking risk.
 
 - **`optionalDependencies` are installed by default.** That is the whole finding. The 35M
   OpenTelemetry exporter stack was in `optionalDependencies` *specifically* to keep it out of ordinary
@@ -275,8 +281,8 @@ after the split. Same stdio server both times.
 - **`npm prune --omit=dev` removes optional peers**, so the container image — which serves either
   entrypoint — has to reinstall them by name. It reads the ranges out of `peerDependencies` so the
   two cannot drift.
-- The MCPB bundle's staged `node_modules` is also 17M; `mcpb pack` reports 8.0M unpacked because its
-  own ignore rules strip a further 817 files.
+- The MCPB bundle's staged `node_modules` is also 17M; `mcpb pack` reports 8.2M unpacked because its
+  own ignore rules strip a further 354 files.
 
 ### Three faults in the container image, none of which a green build showed
 
@@ -295,10 +301,10 @@ Dockerfile. Every one of these produced a successful `docker build`.
   ranges out before deleting the block.
 - The working order is: capture ranges → `npm pkg delete devDependencies peerDependencies
   peerDependenciesMeta` → `npm prune --omit=dev` → `npm install --no-save <the two peers>`. Result:
-  **178MB image, 22M `node_modules`**, holding exactly the four production dependencies and the two
-  peers `hosted.ts` statically imports.
-- Verified in the image: stdio lists 14 tools over real JSON-RPC; `dist/hosted.js` answers `/healthz`
-  200; and with `OTEL_EXPORTER_OTLP_ENDPOINT` set but no exporter installed it logs
+  **178MB image, 22M `node_modules`**, holding exactly the production dependencies and the two peers
+  `hosted.ts` statically imports.
+- Verified in the image: stdio lists its whole tool table over real JSON-RPC; `dist/hosted.js`
+  answers `/healthz` 200; and with `OTEL_EXPORTER_OTLP_ENDPOINT` set but no exporter installed it logs
   "Tracing was requested but could not start" exactly once and serves anyway. CI now runs all three.
 
 ## 8. Process notes
@@ -314,8 +320,10 @@ Dockerfile. Every one of these produced a successful `docker build`.
   gitignored; removing a worktree while keeping its branch restores the check.
 - **This repo has no git hooks** (no `.husky`, no `core.hooksPath`, nothing in `.git/hooks`), so the
   npm scripts are the only gate. That is how an unformatted merge landed.
-- **No lockfile is committed** (`package-lock.json` is gitignored), and it has already caused
-  observable drift: `biome.json` pins schema 2.5.5 while `^2.5.5` installs 2.5.6.
+- **An untracked lockfile caused observable drift, and the lockfile now closes it.** With
+  `package-lock.json` outside git, `biome.json` pinned schema 2.5.5 while `^2.5.5` installed 2.5.6.
+  The lockfile is tracked now and every clean install reads it (`npm ci` in CI and the Docker
+  builder); the schema pin and the installed linter both read 2.5.6.
 
 ### Continuation retention decision (2026-08-13)
 
@@ -341,7 +349,7 @@ deployment sitting behind a Traefik reverse proxy.
   brand-new key registers without a restart was *not* established, which is the standing caveat on
   the finding above.
 - **`tools/list` is not evidence that a credential works.** It never calls Steel, so a bridge that
-  failed to substitute `${STEEL_AUTH_HEADER}` still lists all fourteen tools and looks healthy. Only
+  failed to substitute `${STEEL_AUTH_HEADER}` still lists every tool and looks healthy. Only
   a tool that reaches Steel — `steel_scrape` is the cheapest, since it starts no session —
   distinguishes a live credential from a literal `${...}` sent as a bearer token.
 - **A proxy's port field is not the public port.** Coolify's domain field takes `https://host:8080`

@@ -36,6 +36,7 @@ interface CreateArgs {
     solve_captcha?: boolean | undefined;
     profile_id?: string | undefined;
     namespace?: string | undefined;
+    guest?: boolean | undefined;
     block_ads?: boolean | undefined;
     device?: 'desktop' | 'mobile' | undefined;
     viewport?: { width: number; height: number } | undefined;
@@ -50,31 +51,26 @@ export function registerSessionCreate(host: ToolHost, deps: ServerDeps): void {
         'steel_session_create',
         {
             title: 'Start session',
-            description: 'Billed browser; profiles/credentials: use session_options; release promptly.',
+            description: 'Billed; profiles/credentials via session_options; release.',
             annotations: { destructiveHint: true, openWorldHint: true },
             inputSchema: z
                 .object({
-                    configuration: z.string().optional().describe('Signed setup token.'),
+                    configuration: z.string().optional().describe('Plan token.'),
                     use_proxy: z.boolean().optional().describe('Proxy.'),
-                    solve_captcha: z.boolean().optional().describe('Solve CAPTCHA.'),
-                    profile_id: z.string().optional().describe('READY UUID; not secret.'),
-                    namespace: z.string().optional().describe('Credential; not secret.'),
-                    block_ads: z.boolean().optional().describe('Block ads.'),
-                    device: z.enum(['desktop', 'mobile']).optional().describe('Device class.'),
+                    solve_captcha: z.boolean().optional().describe('CAPTCHA.'),
+                    profile_id: z.string().optional().describe('UUID; not secret.'),
+                    namespace: z.string().optional().describe('Name; not secret.'),
+                    guest: z.boolean().optional().describe('Fresh browser; skip profiles.'),
+                    block_ads: z.boolean().optional().describe('Ads.'),
+                    device: z.enum(['desktop', 'mobile']).optional().describe('Class.'),
                     viewport: z
                         .object({
                             width: z.number().int().min(1).max(10_000),
                             height: z.number().int().min(1).max(10_000),
                         })
                         .optional()
-                        .describe('Viewport.'),
-                    timeout_ms: z
-                        .number()
-                        .int()
-                        .positive()
-                        .max(86_400_000)
-                        .optional()
-                        .describe('Lifetime ms; immutable.'),
+                        .describe('Pixels.'),
+                    timeout_ms: z.number().int().positive().max(86_400_000).optional().describe('Lifetime ms.'),
                 })
                 .strict(),
             // A host that supports MCP Apps renders the live viewer beside this result. A host that
@@ -94,6 +90,11 @@ export function registerSessionCreate(host: ToolHost, deps: ServerDeps): void {
                     }
                 }
                 const settings = planned?.settings ?? {};
+                if (args.guest && (args.profile_id || args.namespace)) {
+                    throw new SteelToolError('guest=true cannot be combined with profile_id or namespace.', {
+                        code: 'invalid_argument',
+                    });
+                }
                 const conflicts = [
                     args.use_proxy !== undefined && settings.useProxy !== undefined ? 'use_proxy' : undefined,
                     args.solve_captcha !== undefined && settings.solveCaptcha !== undefined
@@ -115,8 +116,72 @@ export function registerSessionCreate(host: ToolHost, deps: ServerDeps): void {
                     }
                 }
 
-                if (args.profile_id) {
-                    const profile = await deps.api.getProfile(args.profile_id, ctx.mcpReq.signal);
+                if (
+                    planned?.profileSelection?.mode === 'required' &&
+                    !args.profile_id &&
+                    !args.namespace &&
+                    !args.guest
+                ) {
+                    throw new SteelToolError(
+                        `This account plan found multiple saved profiles or no sole READY profile ` +
+                            `(${planned.profileSelection.availableProfiles} total). ` +
+                            'Choose one READY profile_id returned by steel_session_options; a guest browser was not created.',
+                        { code: 'invalid_argument' }
+                    );
+                }
+                let profileId = args.guest
+                    ? undefined
+                    : (args.profile_id ??
+                      (planned?.profileSelection?.mode === 'automatic'
+                          ? planned.profileSelection.profileId
+                          : undefined));
+                let profileAutoSelected = planned?.profileSelection?.mode === 'automatic' && !args.guest;
+                if (
+                    !planned &&
+                    !profileId &&
+                    !args.namespace &&
+                    !args.guest &&
+                    deps.config.deployment !== 'self_hosted'
+                ) {
+                    const profiles = [...(await deps.api.listProfiles(ctx.mcpReq.signal))].sort(
+                        (a, b) =>
+                            Number(b.status === 'READY') - Number(a.status === 'READY') ||
+                            b.updatedAt.localeCompare(a.updatedAt)
+                    );
+                    if (profiles.length === 1 && profiles[0]?.status === 'READY') {
+                        profileId = profiles[0].id;
+                        profileAutoSelected = true;
+                    } else if (profiles.length > 0) {
+                        const choices = profiles
+                            .slice(0, 20)
+                            .map(
+                                profile =>
+                                    `- profile_id=${profile.id} — ${profile.status}, updated ${profile.updatedAt}`
+                            )
+                            .join('\n');
+                        throw new SteelToolError(
+                            'Saved profiles are available, so a fresh guest browser was not created. Choose one READY ' +
+                                `profile_id and retry, or pass guest=true to intentionally ignore them:\n${choices}` +
+                                (profiles.length > 20
+                                    ? '\nMore profiles exist; call steel_session_options for the complete paginated list.'
+                                    : ''),
+                            {
+                                code: 'invalid_argument',
+                                details: {
+                                    profiles: profiles.slice(0, 20).map(profile => ({
+                                        profile_id: profile.id,
+                                        status: profile.status,
+                                        updated_at: profile.updatedAt,
+                                    })),
+                                    guest_available: true,
+                                },
+                            }
+                        );
+                    }
+                }
+
+                if (profileId) {
+                    const profile = await deps.api.getProfile(profileId, ctx.mcpReq.signal);
                     if (profile.status !== 'READY')
                         throw new SteelToolError('profile_id must refer to a READY profile.', {
                             code: 'invalid_argument',
@@ -156,10 +221,10 @@ export function registerSessionCreate(host: ToolHost, deps: ServerDeps): void {
                 const steelSessionId = mintSteelSessionId(deps);
                 const expiresAt = new Date(deps.now().getTime() + timeout);
                 let profileWriterReserved = false;
-                if (settings.persistProfile && args.profile_id) {
+                if (settings.persistProfile && profileId) {
                     profileWriterReserved = await deps.registry.reserveProfileWriter(
                         deps.principal,
-                        args.profile_id,
+                        profileId,
                         steelSessionId,
                         expiresAt.getTime()
                     );
@@ -180,7 +245,7 @@ export function registerSessionCreate(host: ToolHost, deps: ServerDeps): void {
                             solveCaptcha: args.solve_captcha ?? settings.solveCaptcha,
                             stealthConfig: settings.stealthConfig,
                             optimizeBandwidth: settings.optimizeBandwidth,
-                            profileId: args.profile_id,
+                            profileId,
                             persistProfile: settings.persistProfile,
                             namespace: args.namespace,
                             credentials: args.namespace
@@ -197,9 +262,9 @@ export function registerSessionCreate(host: ToolHost, deps: ServerDeps): void {
                     // accepted the create can be reclaimed instead of becoming an unknown session.
                     await deps.pool.close(steelSessionId).catch(() => undefined);
                     await deps.api.releaseSession(steelSessionId).catch(() => undefined);
-                    if (profileWriterReserved && args.profile_id) {
+                    if (profileWriterReserved && profileId) {
                         await deps.registry
-                            .releaseProfileWriter(deps.principal, args.profile_id, steelSessionId)
+                            .releaseProfileWriter(deps.principal, profileId, steelSessionId)
                             .catch(() => undefined);
                     }
                     throw error;
@@ -218,7 +283,7 @@ export function registerSessionCreate(host: ToolHost, deps: ServerDeps): void {
                         // the player, and the dashboard would show them a sign-in page instead.
                         debugUrl: session.debugUrl,
                         mitigation: {
-                            profileId: session.profileId ?? args.profile_id,
+                            profileId: session.profileId ?? profileId,
                             useProxy: Boolean(args.use_proxy ?? settings.useProxy),
                             solveCaptcha: args.solve_captcha ?? settings.solveCaptcha,
                             managedCredentials: Boolean(args.namespace),
@@ -228,9 +293,9 @@ export function registerSessionCreate(host: ToolHost, deps: ServerDeps): void {
                 } catch (error) {
                     await deps.pool.close(steelSessionId).catch(() => undefined);
                     await deps.api.releaseSession(steelSessionId).catch(() => undefined);
-                    if (profileWriterReserved && args.profile_id) {
+                    if (profileWriterReserved && profileId) {
                         await deps.registry
-                            .releaseProfileWriter(deps.principal, args.profile_id, steelSessionId)
+                            .releaseProfileWriter(deps.principal, profileId, steelSessionId)
                             .catch(() => undefined);
                     }
                     throw error;
@@ -274,7 +339,10 @@ export function registerSessionCreate(host: ToolHost, deps: ServerDeps): void {
                                       'Managed credential injection was requested; this does not prove the site authenticated. Verify the page. If sign-in remains, do not guess another namespace: use steel_session_options before creating a replacement, or hand off this session. Never request or type a password.',
                                   ]
                                 : []),
-                            ...(!args.profile_id && !args.namespace
+                            ...(profileAutoSelected
+                                ? ['The sole READY saved profile was selected automatically.']
+                                : []),
+                            ...(!profileId && !args.namespace
                                 ? [
                                       'No saved identity was requested, so this is a fresh guest browser. If the task needs a saved login, call steel_session_options before creating the session.',
                                   ]
@@ -298,7 +366,7 @@ export function registerSessionCreate(host: ToolHost, deps: ServerDeps): void {
                             max_session_ms: planMax,
                             max_concurrent_sessions: details.concurrencyLimit ?? deps.config.maxConcurrentSessions,
                         },
-                        profile_id: session.profileId ?? args.profile_id,
+                        profile_id: session.profileId ?? profileId,
                         persist_profile: Boolean(settings.persistProfile),
                         managed_credentials: {
                             requested: Boolean(args.namespace),

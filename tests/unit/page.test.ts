@@ -218,6 +218,27 @@ describe('BrowserPage.act — click', () => {
         expect(mouse[1]?.params).toMatchObject({ x: mouse[0]?.params.x, y: mouse[0]?.params.y });
     });
 
+    it('escalates a second dispatched click when neither attempt changes the page', async () => {
+        const fixture = actionFixture(fixtureSession(page([SAVE_BUTTON])));
+        const browserPage = await openPage(fixture);
+        await browserPage.snapshot({});
+
+        const first = await browserPage.act({ action: 'click', target: '@e1' });
+        expect(first.change).toMatchObject({ navigated: false, domMutated: false });
+        expect(first.changeDescription).toMatch(/nothing changed/i);
+
+        const repeated = await catchAsync(browserPage.act({ action: 'click', target: '@e1' }));
+        expect(repeated.code).toBe('click_blocked');
+        expect(repeated.message).toMatch(/twice.*nothing changed/i);
+        expect(repeated.message).toMatch(/do not retry/i);
+        expect(repeated.details).toMatchObject({
+            reason: 'no_observed_change',
+            handoff_required: true,
+            diagnostic: { pointer_dispatched: true },
+        });
+        expect(fixture.sent.filter(call => call.method === 'Input.dispatchMouseEvent')).toHaveLength(4);
+    });
+
     it('names the covering element when the click would not reach the target', async () => {
         const fixture = actionFixture(fixtureSession(page([SAVE_BUTTON])), {
             hitBackendNodeId: 77,
@@ -858,6 +879,18 @@ describe('BrowserPage.act — inside a frame', () => {
         expect(outcome.changeDescription).toMatch(/frame/i);
         expect(outcome.changeDescription).not.toMatch(/wrong element/i);
         expect(outcome.changeDescription).toMatch(/fresh snapshot/i);
+    });
+
+    it('does not count a quiet click inside a frame as a click that had no effect', async () => {
+        // Two quiet clicks on a page control are a dead end worth naming. Inside a frame the click
+        // may well have worked out of sight, so the same two clicks must not throw.
+        const fixture = actionFixture(fixtureSession(framedPage()), { hitBackendNodeId: 110 });
+        const browserPage = await openPage(fixture);
+        const ref = await refOf(browserPage, 'Send');
+
+        await browserPage.act({ action: 'click', target: ref });
+        const second = await browserPage.act({ action: 'click', target: ref });
+        expect(second.changeDescription).toMatch(/frame/i);
     });
 
     it('says the same after typing into a field inside the frame', async () => {

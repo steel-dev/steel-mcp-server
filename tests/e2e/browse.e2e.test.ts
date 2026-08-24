@@ -106,6 +106,24 @@ describe.skipIf(!available)(`browsing the adversarial fixture site (${reason})`,
         expect((await page.snapshot({})).text).toContain('Item added safely');
     });
 
+    it('escalates a real button after two dispatched clicks produce no observable change', async () => {
+        const page = await openSession();
+        await page.navigate(`${FIXTURE_BASE_URL}/no-op-button`);
+        await page.snapshot({});
+        const [target] = await page.find({ text: 'Add to cart', interactiveOnly: true });
+
+        const first = await page.act({ action: 'click', target: target!.ref! });
+        expect(first.changeDescription).toMatch(/nothing changed/i);
+
+        const repeated = await page.act({ action: 'click', target: target!.ref! }).then(
+            () => null,
+            (thrown: unknown) => thrown as { code?: string; message?: string; details?: Record<string, unknown> }
+        );
+        expect(repeated?.code).toBe('click_blocked');
+        expect(repeated?.message).toMatch(/twice.*nothing changed/i);
+        expect(repeated?.details).toMatchObject({ reason: 'no_observed_change', handoff_required: true });
+    });
+
     it('synthesises names for icon-only buttons and marks them inferred', async () => {
         const page = await openSession();
         await page.navigate(`${FIXTURE_BASE_URL}/unnamed-buttons`);

@@ -332,7 +332,10 @@ export function registerAct(host: ToolHost, deps: ServerDeps): void {
                     throw error;
                 }
                 const handedOff = await handoff(ctx, args.session_id, record, page);
-                if (handedOff) return handedOff;
+                if (handedOff) {
+                    page.resetClickRecovery();
+                    return handedOff;
+                }
 
                 const sections = args.include_snapshot
                     ? await snapshotSection(page, deps, { maxTokens: args.max_tokens })

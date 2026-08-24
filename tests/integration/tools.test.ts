@@ -628,6 +628,211 @@ describe('steel_session_create', () => {
             await h.close();
         }
     });
+
+    it('defaults a direct create to the sole READY saved profile', async () => {
+        const profileId = 'e5bee5de-a7ca-4225-8d69-2ac76ed6e8b7';
+        const api = new FakeSteelApi({
+            profiles: [
+                {
+                    id: profileId,
+                    status: 'READY',
+                    createdAt: '2026-01-01T00:00:00Z',
+                    updatedAt: '2026-01-02T00:00:00Z',
+                },
+            ],
+        });
+        const h = await connect(testDeps({ api }));
+        try {
+            const created = await h.client.callTool({ name: 'steel_session_create', arguments: {} });
+
+            expect(isError(created)).toBe(false);
+            expect(api.created).toHaveLength(1);
+            expect(api.created[0]?.profileId).toBe(profileId);
+            expect(created.structuredContent).toMatchObject({ profile_id: profileId });
+            expect(textOf(created)).toMatch(/sole READY saved profile.*selected automatically/i);
+            expect(textOf(created)).not.toMatch(/fresh guest browser/i);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it('lists multiple direct-create profile choices instead of silently starting a guest browser', async () => {
+        const firstProfileId = 'e5bee5de-a7ca-4225-8d69-2ac76ed6e8b7';
+        const secondProfileId = '11111111-1111-4111-8111-111111111111';
+        const api = new FakeSteelApi({
+            profiles: [
+                {
+                    id: firstProfileId,
+                    status: 'READY',
+                    createdAt: '2026-01-01T00:00:00Z',
+                    updatedAt: '2026-01-03T00:00:00Z',
+                },
+                {
+                    id: secondProfileId,
+                    status: 'READY',
+                    createdAt: '2026-01-01T00:00:00Z',
+                    updatedAt: '2026-01-02T00:00:00Z',
+                },
+            ],
+        });
+        const h = await connect(testDeps({ api }));
+        try {
+            const unresolved = await h.client.callTool({ name: 'steel_session_create', arguments: {} });
+
+            expect(isError(unresolved)).toBe(true);
+            expect(textOf(unresolved)).toContain(firstProfileId);
+            expect(textOf(unresolved)).toContain(secondProfileId);
+            expect(textOf(unresolved)).toMatch(/choose one READY profile_id/i);
+            expect(textOf(unresolved)).toMatch(/guest=true/i);
+            expect(api.created).toHaveLength(0);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it('starts an intentional fresh browser when guest mode is explicit', async () => {
+        const api = new FakeSteelApi({
+            profiles: [
+                {
+                    id: 'e5bee5de-a7ca-4225-8d69-2ac76ed6e8b7',
+                    status: 'READY',
+                    createdAt: '2026-01-01T00:00:00Z',
+                    updatedAt: '2026-01-02T00:00:00Z',
+                },
+            ],
+        });
+        const h = await connect(testDeps({ api }));
+        try {
+            const created = await h.client.callTool({
+                name: 'steel_session_create',
+                arguments: { guest: true },
+            });
+
+            expect(isError(created)).toBe(false);
+            expect(api.created).toHaveLength(1);
+            expect(api.created[0]?.profileId).toBeUndefined();
+            expect(textOf(created)).toMatch(/fresh guest browser/i);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it('defaults an account plan to its sole READY saved profile', async () => {
+        const profileId = 'e5bee5de-a7ca-4225-8d69-2ac76ed6e8b7';
+        const api = new FakeSteelApi({
+            profiles: [
+                {
+                    id: profileId,
+                    status: 'READY',
+                    createdAt: '2026-01-01T00:00:00Z',
+                    updatedAt: '2026-01-02T00:00:00Z',
+                },
+            ],
+        });
+        const h = await connect(testDeps({ api }));
+        try {
+            const options = await h.client.callTool({
+                name: 'steel_session_options',
+                arguments: { url: 'https://example.com', goal: 'account' },
+            });
+            const planned = (
+                options as { structuredContent?: { create_template?: { configuration?: string; profile_id?: string } } }
+            ).structuredContent?.create_template;
+
+            expect(planned?.profile_id).toBe(profileId);
+            expect(textOf(options)).toContain(profileId);
+            expect(textOf(options)).toMatch(/sole READY profile.*selected automatically/i);
+            expect(textOf(options)).toMatch(/no profile picker/i);
+
+            const created = await h.client.callTool({
+                name: 'steel_session_create',
+                arguments: { configuration: planned?.configuration },
+            });
+            expect(isError(created)).toBe(false);
+            expect(api.created).toHaveLength(1);
+            expect(api.created[0]?.profileId).toBe(profileId);
+            expect(created.structuredContent).toMatchObject({ profile_id: profileId });
+            expect(textOf(created)).not.toMatch(/fresh guest browser/i);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it('lists multiple profile UUIDs in text and blocks an unresolved planned guest create', async () => {
+        const firstProfileId = 'e5bee5de-a7ca-4225-8d69-2ac76ed6e8b7';
+        const secondProfileId = '11111111-1111-4111-8111-111111111111';
+        const api = new FakeSteelApi({
+            profiles: [
+                {
+                    id: firstProfileId,
+                    status: 'READY',
+                    createdAt: '2026-01-01T00:00:00Z',
+                    updatedAt: '2026-01-03T00:00:00Z',
+                },
+                {
+                    id: secondProfileId,
+                    status: 'READY',
+                    createdAt: '2026-01-01T00:00:00Z',
+                    updatedAt: '2026-01-02T00:00:00Z',
+                },
+            ],
+        });
+        const h = await connect(testDeps({ api }));
+        try {
+            const options = await h.client.callTool({
+                name: 'steel_session_options',
+                arguments: { url: 'https://example.com', goal: 'account' },
+            });
+            const planned = (options as { structuredContent?: { create_template?: { configuration?: string } } })
+                .structuredContent?.create_template;
+
+            expect(textOf(options)).toContain(firstProfileId);
+            expect(textOf(options)).toContain(secondProfileId);
+            expect(textOf(options)).toMatch(/choose one READY profile_id/i);
+            expect(textOf(options)).toMatch(/no profile picker/i);
+
+            const unresolved = await h.client.callTool({
+                name: 'steel_session_create',
+                arguments: { configuration: planned?.configuration },
+            });
+            expect(isError(unresolved)).toBe(true);
+            expect(textOf(unresolved)).toMatch(/multiple saved profiles.*profile_id/i);
+            expect(textOf(unresolved)).toMatch(/steel_session_options/i);
+            expect(api.created).toHaveLength(0);
+
+            const selected = await h.client.callTool({
+                name: 'steel_session_create',
+                arguments: { configuration: planned?.configuration, profile_id: secondProfileId },
+            });
+            expect(isError(selected)).toBe(false);
+            expect(api.created).toHaveLength(1);
+            expect(api.created[0]?.profileId).toBe(secondProfileId);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it('allows a planned fresh account session when no saved profiles exist', async () => {
+        const api = new FakeSteelApi({ profiles: [], credentials: [] });
+        const h = await connect(testDeps({ api }));
+        try {
+            const options = await h.client.callTool({
+                name: 'steel_session_options',
+                arguments: { url: 'https://example.com', goal: 'account' },
+            });
+            const configuration = (options as { structuredContent?: { create_template?: { configuration?: string } } })
+                .structuredContent?.create_template?.configuration;
+            const created = await h.client.callTool({ name: 'steel_session_create', arguments: { configuration } });
+
+            expect(isError(created)).toBe(false);
+            expect(api.created).toHaveLength(1);
+            expect(api.created[0]?.profileId).toBeUndefined();
+            expect(textOf(created)).toMatch(/fresh guest browser/i);
+        } finally {
+            await h.close();
+        }
+    });
+
     it('consumes a signed account plan and revalidates its exact-origin namespace', async () => {
         const api = new FakeSteelApi({
             profiles: [

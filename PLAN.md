@@ -21,9 +21,16 @@ CAPTCHAs still invoke it automatically (§14.A).
 
 P3 now has its entrypoint: `src/hosted.ts` (`npm run start:hosted`) builds the runtime, picks the
 handle store from the environment, serves `/mcp` over Node's HTTP server with a `/healthz` probe
-ahead of the Host allowlist, and releases every session it holds on shutdown. What remains in P3 is
-operational rather than structural: leak-path metrics and alerting on the Steel-backstop release
-count (§5), a soak test, staging, and `mcp.steel.dev` itself.
+ahead of the Host allowlist, and releases every session it holds on shutdown. A single-replica
+deployment behind a Coolify/Traefik proxy serves it to a real client (NOTES §9). What remains in P3
+is operational rather than structural: leak-path metrics and alerting on the Steel-backstop release
+count (§5), a soak test, and `mcp.steel.dev` itself.
+
+**Checks re-run 2026-08-24 on `2.0.0-rc.9`:** typecheck, lint, 949 unit and integration tests, the
+byte budgets (browse: 16 tools, 16,691 of 17,000 bytes; instructions exactly at the 2,048-byte cap),
+and conformance at both protocol eras all pass. `npm run pack:mcpb` produces a bundle whose staged
+server lists 16 tools over real JSON-RPC. The real-browser suites (`test:browser`, `test:e2e`) need
+local Chrome and Docker and were not part of that run.
 
 ---
 
@@ -237,8 +244,10 @@ Distribution prerequisites with external queue time start **in parallel with P1*
   - **In parallel (⏱ external lead time):** claim the registry namespace and npm name (registry names are immutable, no unpublish); add `mcpName` to package.json; file the DNS verification ticket; provision `mcp.steel.dev` (currently NXDOMAIN); start the Claude Team org and OpenAI identity verification; publish a privacy policy; build the MFA-free demo account; **fix the live PulseMCP listing that advertises a v1 install path for a package never published to npm.**
 - **P2 — Streamable HTTP** (week 2). Transport, handle registry, reaper, bearer + query-param auth, Origin/Host validation, cost-weighted rate limiting, OpenTelemetry with `_meta` trace propagation. MRTR human-in-the-loop.
 - **P3 — Hosted** (week 3). The entrypoint has landed (`src/hosted.ts`: `STEEL_ALLOWED_HOSTS`,
-  `STEEL_ALLOWED_ORIGINS`, `PORT`, `HOST`, `/healthz`, shutdown release). Remaining: staging,
-  leak-path metrics and alerting, soak test, then `mcp.steel.dev`.
+  `STEEL_ALLOWED_ORIGINS`, `PORT`, `HOST`, `/healthz`, shutdown release), and a single-replica
+  deployment behind a Coolify/Traefik proxy serves `/mcp` to a real client (NOTES §9 records what a
+  reverse proxy in front of it changes). Remaining: leak-path metrics and alerting on the
+  Steel-backstop release count (§5), a soak test, then `mcp.steel.dev`.
 - **P4 — Distribution.** Official Registry record (both `remotes[]` and `packages[]`; no OAuth needed, and it transitively feeds the GitHub registry → VS Code gallery), `mcp-publisher` wired into release CI, README to the Playwright MCP bar with one-click badges, **the published token-economics table**, self-hosted Claude plugin marketplace, MCPB bundle → Smithery + Claude Desktop, Cursor Marketplace.
 - **P4.5 — MCP Apps live-session viewer. Shipped.** Scoped in §14.A, built ahead of P3 because it had no dependency on either. It is the distribution asset ("watch your agent browse, inline in the chat"), and it is where MRTR hands over on a login wall.
 - **P5 — Gated on OAuth.** Anthropic Connectors Directory, OpenAI Plugins Directory. Then the Tasks extension when the SDK ships server-side support (§14.B), and masking-based injection defense.
@@ -365,7 +374,7 @@ protocol machinery.
    token instead, and MRTR falls back to the player URL only for a client with no viewer rendered.
 6. Tests: unit (resource registration, `_meta`, no dynamic interpolation), integration
    (`server/discover` advertises the extension, `resources/read` MIME and cache hints), budget (the
-   `_meta.ui` bytes are priced — 15 tools, 16,814 bytes of the 17,000-byte budget), and
+   `_meta.ui` bytes are priced — 16 tools, 16,691 bytes of the 17,000-byte budget), and
    `npm run test:browser`, which runs the shell in a real Chrome against a fake CDP server. That last
    suite exists because unit tests asserting the shell's *source* passed while two runtime bugs made
    it unusable (NOTES §6).

@@ -12,6 +12,10 @@ manifest fields are `name`, `version`, `description`, `author`, `server`; `serve
 `entry_point` and `mcp_config.command`; each `user_config` entry requires `type`, `title` and
 `description`.
 
+Bundle facts below re-measured 2026-08-24 by a full `npm run pack:mcpb` on `2.0.0-rc.9`: the staged
+server starts over JSON-RPC, reports its own version, and lists **16 tools** with a 900,000ms hard and
+600,000ms inactivity default.
+
 RESEARCH.md §8 covers the wider distribution plan. This file is only the Claude Desktop directory.
 
 ## Where we already comply
@@ -23,7 +27,7 @@ Recorded so review prep does not re-litigate it.
 | Public GitHub repo, MIT licensed | `steel-dev/steel-mcp-server`, MIT |
 | Built with Node.js | Node ≥20, ESM |
 | Tool names ≤64 chars (policy 5C) | Longest is `steel_session_diagnostics`, 25 |
-| `title` + `readOnlyHint`/`destructiveHint` on every tool (5E) | All 14, enforced by `tests/integration/tools.test.ts:92` |
+| `title` + `readOnlyHint`/`destructiveHint` on every tool (5E) | All 16, enforced by `tests/integration/tools.test.ts:104` |
 | Graceful, specific errors (5A) | Named errors with recovery actions; RESEARCH.md §7 |
 | Token frugality (5B) | `npm run budget` gate, screenshots cap inline PNGs at 4 MiB and retain attachment links, post-action snapshots off by default |
 | No extraneous conversation data (1D) | Telemetry loads no exporter unless an `OTEL_*` var asks; `tests/unit/packaging.test.ts` guards it |
@@ -43,15 +47,18 @@ Policy 2B requires descriptions to match actual functionality, and a reviewer re
 
 - ~~README documented `vision` and `full` as aliases of `browse`~~ — both are now refused rather
   than aliased (`PROFILE_NAMES` is `scrape`, `browse`), and the README documents only those two.
-- ~~README said "twelve tools"~~ — it says fifteen and lists replay, `steel_session_handoff`, and
-  `steel_session_live_view`, noting that hosts hide the latter via
-  `_meta.ui.visibility: ['app']`. A test now asserts the README mentions every entry in `TOOL_TABLE`.
+- ~~README said "twelve tools"~~ — it says sixteen and lists every tool, including replay,
+  `steel_session_handoff`, `steel_batch`, `steel_session_options`, and `steel_session_live_view`,
+  noting that hosts hide the last via `_meta.ui.visibility: ['app']`. A test asserts the README
+  mentions every entry in `TOOL_TABLE`.
 - ~~`repository.url` and `bugs` pointed at `steel-dev/mcp-server` and 404ed~~ — both now name
   `steel-dev/steel-mcp-server`, asserted against the real remote.
 
 ### 1.2 Prune the dependency tree for a desktop bundle
 
-**Done 2026-08-04.** The bundle carries four dependency trees and installs 5 packages;
+**Done 2026-08-04, counts current at rc.9.** The bundle carries five dependency trees
+(`@modelcontextprotocol/server`, `@opentelemetry/api`, `safe-regex2`, `ws`, `zod`) and installs
+7 packages;
 `@modelcontextprotocol/node`, `ioredis` and the OpenTelemetry exporter stack are all unreachable
 from `stdio.ts` and never installed. `scripts/stage-mcpb-package.mjs` narrows the staged
 `package.json` before `npm install` rather than deleting directories afterwards — measurements and
@@ -94,10 +101,15 @@ the README links the same privacy policy the manifest declares.
 
 ### 1.6 Install and exercise the bundle locally
 
-The release-candidate bundle is packed at `build/steel-mcp-2.0.0-rc.2.mcpb` and its staged server
-verified over JSON-RPC.
-Installing it into Claude for macOS, running all 15 tools against a real Steel key, and confirming the
+The release-candidate bundle is packed at `build/steel-mcp-2.0.0-rc.9.mcpb` (2.0MB, 969 files) and
+its staged server verified over JSON-RPC.
+Installing it into Claude for macOS, running all 16 tools against a real Steel key, and confirming the
 live viewer and finished-session replay render is **yours** — see 2.7.
+
+Seven release candidates separate rc.2 from rc.9, and the manual run covers ground rc.2 did not have:
+`steel_session_handoff` gained the trusted local-file picker and an exclusive renewable human-control
+lease, `steel_session_options` joined the tool table as the sixteenth tool, a session refuses a
+profile the caller did not choose, and an unstable or no-op click hands off rather than guessing.
 
 ---
 
@@ -108,13 +120,14 @@ re-litigated. The rest block submission.
 
 ### 2.1 The `author` field — settled
 
-`{ name: "Nikola Balić", email: "niko@steelbrowser.com", url: "https://github.com/nibzard" }`, with
-Steel ownership carried by `homepage`, `repository` and `display_name`. Matches the form's wording,
-which asks for *your* GitHub profile.
+`{ name: "Steel", email: "niko@steelbrowser.com", url: "https://github.com/steel-dev" }`. The work
+is done for Steel, so the manifest credits the company and links its GitHub org; the email stays a
+reachable Steel-domain contact. The form still asks for a personal GitHub profile — that answer
+lives in the form itself (2.8), not in the manifest.
 
 ### 2.2 The release version — settled
 
-`2.0.0-rc.2`. `package.json`, `SERVER_VERSION`, `manifest.json` and the README's Status line all say
+`2.0.0-rc.9`. `package.json`, `SERVER_VERSION`, `manifest.json` and the README's Status line all say
 so, and tests hold them together. Promote the same code to `2.0.0` after the release-candidate checks
 pass.
 
@@ -150,15 +163,18 @@ Steel's behalf:
   address you gave me rather than guessing at one that might bounce.
 - Whether those response windows are ones Steel wants to be held to.
 
-### 2.7 Install the bundle and run all 15 tools
+### 2.7 Install the bundle and run all 16 tools
 
-`build/steel-mcp-2.0.0-rc.2.mcpb`. Its staged server is verified over JSON-RPC and lists 15 tools, but
+`build/steel-mcp-2.0.0-rc.9.mcpb`. Its staged server is verified over JSON-RPC and lists 16 tools, but
 that proves it starts, not that a real Steel key drives a real browser through Desktop's own Node.
 Install it, fully restart Claude, and open a new conversation. Confirm the installed server reports
-`2.0.0-rc.2`, lists 15 tools including `steel_session_handoff`, and defaults to a 15-minute session.
-Run each tool, confirm the live viewer renders, and exercise Take control → Hand back → Continue on
-the same session. Finished-session replay is dashboard-only in this release candidate, so verify
-that its safe dashboard link opens and that no replay app resource is registered or bundled.
+`2.0.0-rc.9`, lists 16 tools including `steel_session_handoff` and `steel_session_options`, and
+defaults to a 15-minute hard deadline with a 10-minute inactivity timeout. Run each tool, confirm the
+live viewer renders, and exercise Take control → Hand back → Continue on the same session. Also
+exercise the trusted local-file picker during a handoff, and confirm the chosen file reaches the page
+while its path and bytes stay off the model plane. Finished-session replay is dashboard-only in this
+release candidate, so verify that its safe dashboard link opens and that no replay app resource is
+registered or bundled.
 
 ### 2.8 Submit the form
 

@@ -508,6 +508,32 @@ function cartPage(withChallenge: boolean): FixturePage {
 }
 
 describe('the tools that can hit a wall', () => {
+    it('hands off after two no-op clicks without replaying either click after hand-back', async () => {
+        const harness = await connectModern({ deps: testDeps({ page: plainPage }) });
+        const handle = await newSession(harness);
+        const steelSessionId = harness.deps.api.created[0]!.sessionId;
+        await harness.client.callTool({ name: 'steel_snapshot', arguments: { session_id: handle } });
+        const fixture = harness.deps.pool.fixtureFor(steelSessionId)!;
+
+        const first = await harness.client.callTool({
+            name: 'steel_act',
+            arguments: { session_id: handle, action: 'click', target: '@e1' },
+        });
+        expect(first.isError).toBeFalsy();
+        expect(textOf(first)).toMatch(/nothing changed/i);
+
+        const handedBack = await harness.client.callTool({
+            name: 'steel_act',
+            arguments: { session_id: handle, action: 'click', target: '@e1' },
+        });
+
+        expect(handedBack.isError).toBeFalsy();
+        expect(textOf(handedBack)).toMatch(/handed the browser back/i);
+        expect(harness.elicited).toHaveLength(1);
+        expect(harness.deps.api.created).toHaveLength(1);
+        expect(fixture.sent.filter(call => call.method === 'Input.dispatchMouseEvent')).toHaveLength(4);
+    });
+
     it('hands off a repeatedly unstable click on the same session without replaying it after hand-back', async () => {
         const harness = await connectModern({ deps: testDeps({ page: plainPage }) });
         const handle = await newSession(harness);

@@ -585,6 +585,24 @@ export function clickLayoutUnavailableError(ref: string, repeated = false): Stee
     });
 }
 
+/** Builds the terminal error after Chrome dispatched the same click twice without observable progress. */
+export function clickNoObservedChangeError(ref: string): SteelToolError {
+    return new SteelToolError(
+        `Chrome dispatched a click on ${ref} twice, but nothing changed on either attempt: no page change or focus move. ` +
+            'Do not retry this control again; change strategy, try another candidate, or call ' +
+            'steel_session_handoff for manual control.',
+        {
+            code: 'click_blocked',
+            details: {
+                ref,
+                reason: 'no_observed_change',
+                handoff_required: true,
+                diagnostic: { pointer_dispatched: true },
+            },
+        }
+    );
+}
+
 /** Capabilities the self-hosted steel-browser image does not have. */
 export type SelfHostCapability = 'concurrency' | 'use_proxy' | 'solve_captcha' | 'profile_id' | 'credentials' | 'files';
 

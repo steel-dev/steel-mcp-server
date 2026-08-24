@@ -28,7 +28,8 @@ The entrypoints, since three of them have similar names:
 
 ## Dependencies are split on purpose
 
-`dependencies` holds only what `dist/stdio.js` imports — four packages. Everything the
+`dependencies` holds only what `dist/stdio.js` imports — five packages
+(`@modelcontextprotocol/server`, `@opentelemetry/api`, `safe-regex2`, `ws`, `zod`). Everything the
 hosted path needs is an **optional `peerDependency`**, so it is absent from a default install:
 
 | Package | Needed by | Why it is not a dependency |
@@ -38,11 +39,13 @@ hosted path needs is an **optional `peerDependency`**, so it is absent from a de
 | `@opentelemetry/sdk-node`, `@opentelemetry/exporter-trace-otlp-http` | `tracing.ts`, only when an `OTEL_*` variable asks | 35M. Loaded through a dynamic `import()` in a `try`/`catch` that warns and carries on, so absent is a supported state |
 
 Measured 2026-08-04: with those in `dependencies` and `optionalDependencies`, a consumer install was
-**68M across 85 packages**. It is now **17M across 5** — the same tree the MCPB bundle carries. npm
-installs `optionalDependencies` by default, which is why the exporter stack reached everyone; only
-`peerDependenciesMeta.<name>.optional` actually keeps a package out of a default install.
+**68M across 85 packages**. Re-measured 2026-08-24, it is **17M across 7 packages** — the same tree the
+MCPB bundle carries. npm installs `optionalDependencies` by default, which is why the exporter stack
+reached everyone; only `peerDependenciesMeta.<name>.optional` actually keeps a package out of a
+default install.
 
-All four are also in `devDependencies`, so this repository builds, typechecks and tests against them.
+All four hosted-only peers are also in `devDependencies`, so this repository builds, typechecks and
+tests against them.
 The dashboard-only release-candidate replay path has no Hls.js dependency or staged player asset.
 Consequences to remember:
 
@@ -93,7 +96,9 @@ The manually dispatched `release.yml`:
 2. Uploads that MCPB with `SHA256SUMS`, then pauses at the protected `release` environment so an
    operator can install and smoke those exact bytes in Claude Desktop.
 3. After approval, downloads and verifies the same artifact, creates an annotated immutable tag at
-   the recorded SHA, and publishes a GitHub prerelease. It never rebuilds in the publish job.
+   the recorded SHA, and publishes the GitHub release. A version with a prerelease suffix (`-rc.N`)
+   is marked prerelease and not Latest; a bare version (`2.0.0`) publishes as a full release and
+   becomes Latest. It never rebuilds in the publish job.
 4. Does not publish npm or GHCR. Those require a separate ownership and distribution decision.
 
 Configure the GitHub `release` environment with a required reviewer before dispatching the workflow.
@@ -114,9 +119,9 @@ Do not tag it locally. Confirm the version surfaces and dispatch the protected w
 npm run sync:version -- --check   # the generated version surfaces agree
 ```
 
-The protected publish job creates `v<current-version>` only after approval and marks its GitHub
-release as a prerelease that is not Latest. If anything is wrong after publication, prepare the next
-prerelease; never move an existing tag.
+The protected publish job creates `v<current-version>` only after approval; a suffixed version is
+marked prerelease and not Latest, a bare one becomes the Latest release. If anything is wrong after
+publication, prepare the next release; never move an existing tag.
 
 ## Before the first release
 

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { resolveInactivityTimeout } from '../config.js';
 import type { ServerDeps, ToolHost } from '../context.js';
 import { SteelToolError } from '../errors.js';
-import { recommendSession, type SessionNeed } from '../session-plan.js';
+import { recommendSession, type SessionNeed, type SessionPlanState } from '../session-plan.js';
 import type { SteelCredentialSummary, SteelProfileSummary } from '../steel/types.js';
 import { guard, successResult } from './shared.js';
 
@@ -77,6 +77,31 @@ function sortCredentials(items: SteelCredentialSummary[]): SteelCredentialSummar
     return [...newest.values()].sort(
         (a, b) => a.namespace.localeCompare(b.namespace) || b.updatedAt.localeCompare(a.updatedAt)
     );
+}
+
+function profileText(
+    profiles: SteelProfileSummary[],
+    totalProfiles: number,
+    selection: SessionPlanState['profileSelection'],
+    nextCursor?: string
+): string {
+    if (totalProfiles === 0) {
+        return 'No saved profiles were found. This account plan may start a fresh browser for manual sign-in.';
+    }
+    const rows = profiles.map(item => `- profile_id=${item.id} — ${item.status}, updated ${item.updatedAt}`);
+    const guidance =
+        selection?.mode === 'automatic'
+            ? `The sole READY profile ${selection.profileId} was selected automatically.`
+            : 'Multiple or unavailable saved profiles require a choice. Tell the user the UUID/status choices if needed, then choose one READY profile_id; do not create a guest browser from this plan.';
+    return [
+        'Saved profiles (profile UUIDs are not secret; no profile picker will open):',
+        ...rows,
+        guidance,
+        'Loading a profile is read-only by default. Use persist_profile only when profile changes must be saved on release.',
+        ...(nextCursor
+            ? [`More saved identities exist. Call steel_session_options again with cursor="${nextCursor}".`]
+            : []),
+    ].join('\n');
 }
 
 function page<T>(items: T[], fingerprintInput: unknown, cursor?: string): { items: T[]; next?: string } {
@@ -211,15 +236,27 @@ export function registerSessionOptions(host: ToolHost, deps: ServerDeps): void {
                 const pageCredentials = paged.items
                     .filter(i => i.kind === 'credential')
                     .map(i => i.item as SteelCredentialSummary);
-                const createTemplate: { configuration?: string; namespace?: string } = {};
-                if (recipe.state) createTemplate.configuration = await deps.sessionPlanState.mint(recipe.state, ctx);
+                const soleReadyProfile =
+                    profiles.length === 1 && profiles[0]?.status === 'READY' ? profiles[0] : undefined;
+                const profileSelection: SessionPlanState['profileSelection'] =
+                    args.goal !== 'account' || profiles.length === 0
+                        ? undefined
+                        : soleReadyProfile
+                          ? { mode: 'automatic', profileId: soleReadyProfile.id }
+                          : { mode: 'required', availableProfiles: profiles.length };
+                const plannedState = recipe.state
+                    ? { ...recipe.state, ...(profileSelection ? { profileSelection } : {}) }
+                    : undefined;
+                const createTemplate: { configuration?: string; namespace?: string; profile_id?: string } = {};
+                if (plannedState) createTemplate.configuration = await deps.sessionPlanState.mint(plannedState, ctx);
+                if (soleReadyProfile) createTemplate.profile_id = soleReadyProfile.id;
                 if (args.goal === 'account' && credentials.length === 1)
                     createTemplate.namespace = credentials[0]?.namespace;
                 const unresolved: Array<{ field: 'profile_id' | 'namespace'; reason: string }> = [];
-                if (args.goal === 'account' && profiles.length)
+                if (profileSelection?.mode === 'required')
                     unresolved.push({
                         field: 'profile_id',
-                        reason: 'Choose a READY profile_id; none is selected automatically.',
+                        reason: 'Choose one READY profile_id; no profile picker opens and guest creation is blocked.',
                     });
                 if (args.goal === 'account' && credentials.length !== 1)
                     unresolved.push({
@@ -268,7 +305,13 @@ export function registerSessionOptions(host: ToolHost, deps: ServerDeps): void {
                 };
                 return successResult(
                     {
-                        result: `${recipe.recommendedTool} is recommended for ${origin}. ${pageProfiles.length} profiles and ${pageCredentials.length} credential namespaces are shown on this page.`,
+                        result: [
+                            `${recipe.recommendedTool} is recommended for ${origin}.`,
+                            ...(args.goal === 'account'
+                                ? [profileText(pageProfiles, profiles.length, profileSelection, paged.next)]
+                                : []),
+                            `${pageCredentials.length} exact-origin credential namespaces are returned on this page.`,
+                        ].join('\n\n'),
                     },
                     result
                 );

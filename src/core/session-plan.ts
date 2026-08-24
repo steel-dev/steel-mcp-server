@@ -27,6 +27,7 @@ export interface SessionPlanState {
     goal: SessionGoal;
     settings: SessionPlanSettings;
     accountContext: boolean;
+    profileSelection?: { mode: 'automatic'; profileId: string } | { mode: 'required'; availableProfiles: number };
 }
 
 export interface RecipeInput {

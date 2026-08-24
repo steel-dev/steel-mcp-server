@@ -16,6 +16,7 @@ const routes = {
              <ul>
                <li><a href="/cookie-banner">Cookie banner</a></li>
                <li><a href="/centre-covered-button">Centre-covered button</a></li>
+               <li><a href="/no-op-button">No-op button</a></li>
                <li><a href="/modal">Mid-task modal</a></li>
                <li><a href="/infinite-scroll">Infinite scroll</a></li>
                <li><a href="/login">Login wall</a></li>
@@ -67,6 +68,15 @@ const routes = {
                  document.getElementById('outcome').textContent = 'Item added safely';
                });
              </script>`
+        ),
+    }),
+
+    '/no-op-button': () => ({
+        body: page(
+            'No-op button',
+            `<h1>Unresponsive cart</h1>
+             <button id="target">Add to cart</button>
+             <p>The control intentionally has no event handler.</p>`
         ),
     }),
 

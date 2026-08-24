@@ -5,6 +5,7 @@ import {
     clickBlockedError,
     clickHitTestUnstableError,
     clickLayoutUnavailableError,
+    clickNoObservedChangeError,
     navigationFailedError,
     SteelToolError,
 } from './errors.js';
@@ -521,6 +522,11 @@ export class BrowserPage {
         this.clickFailureLoaderId = undefined;
     }
 
+    /** Clears click recovery after a person is asked to change the page before an action is replayed. */
+    resetClickRecovery(): void {
+        this.clearClickFailures();
+    }
+
     private observeRecoveryLoader(loaderId: string): void {
         if (this.clickFailureLoaderId !== undefined && loaderId !== this.clickFailureLoaderId) {
             this.clearClickFailures();
@@ -663,7 +669,13 @@ export class BrowserPage {
                 const baseline = await this.beginChange(handle);
                 await this.clickAt(point);
                 const { change, description } = await this.settleNow(baseline, false, handle);
-                this.clearClickFailures();
+                if (change.navigated || change.domMutated || change.focusChanged) {
+                    this.clearClickFailures();
+                } else if (!change.frameUnobserved && this.markClickFailure(handle).repeated) {
+                    // Inside a frame, silence is not evidence: the frame's own DOM is not observed,
+                    // so a quiet click there is neither a success nor a failure to count.
+                    throw clickNoObservedChangeError(handle.describe);
+                }
                 return { summary: `Clicked ${handle.describe}.`, change, changeDescription: description };
             }
             case 'hover': {
