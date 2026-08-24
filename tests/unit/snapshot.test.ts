@@ -300,8 +300,9 @@ describe('PageState.capture — frames', () => {
     });
 
     it('clips to what the frame shows, which is its box less its border and padding', async () => {
-        // The frame's box is 100 tall from y=40, but 6px of that is border and padding, so its
-        // content runs from y=46 to y=94. A field at frame-y 90 lands at page-y 96, just outside.
+        // The frame's box is 100 tall from y=40 with 6px of border and padding on each side, so its
+        // content runs from y=46 to y=134. A field at frame-y 90 lands at page-y 136, just outside;
+        // clipping to the border box instead would have kept it on screen until 140.
         const low = { ...FRAME_FIELD, bounds: [10, 90, 150, 20] as [number, number, number, number] };
         const short = iframe(formFrame([low]), { bounds: [30, 40, 800, 100] });
         const { session } = fixtureSession(page([short]));

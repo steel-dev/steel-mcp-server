@@ -383,10 +383,21 @@ directions: the fixture was scrolled and unscrolled, and the computed result com
   difference from the viewport-relative box model was exactly the summed scroll. The border term is
   not optional: Chrome's default `<iframe>` border is 2px, so omitting it is wrong on almost every
   page.
-- **Everything downstream already works with a child frame's `backendNodeId` on the page session.**
+- **Geometry and input already work with a child frame's `backendNodeId` on the page session.**
   `DOM.getBoxModel` returns top-level coordinates, `DOM.getNodeForLocation` at that point hit-tests
   back to the same node, and a dispatched pointer event lands in the frame. No per-frame session and
   no coordinate translation are needed to act on what the descent finds.
+- **Change detection and identity do not cross the frame boundary on their own.** Three things
+  assume the top document unless told otherwise, and the action path now carries the ref's frame
+  to tell them: the settle pass's `MutationObserver` is installed by `Runtime.evaluate` in the top
+  document, so a change confined to a frame is invisible to it (the change description says so
+  instead of reporting nothing changed); `Page.frameStartedNavigating` for a subframe never leads to
+  `Page.loadEventFired`, so a frame that submits is waited on through `Page.frameStoppedLoading`;
+  and `Runtime.callFunctionOn` refuses an argument from another document (`Argument should belong to
+  the same JavaScript world as target object`), which the containment probe treats as the blocker
+  it is. Ref staleness is keyed on the loader of the frame's own document, which `Page.getFrameTree`
+  reports under `childFrames[].frame.loaderId`, so a frame that loads a new document is a
+  `frame_navigated` stale ref while the page's loader is unchanged.
 - **Out-of-process frames are a different problem.** With site isolation on, a cross-origin frame is
   a separate target: it is absent from `Page.getFrameTree` on the page session and absent from the
   DOM snapshot's documents, so none of the above reaches it. Its `src` attribute is still in the

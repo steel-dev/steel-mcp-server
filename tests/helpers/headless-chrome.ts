@@ -314,7 +314,9 @@ export class HeadlessChrome {
     private constructor(
         private readonly process: ChildProcess,
         private readonly connection: CdpConnection,
-        private readonly profile: string
+        private readonly profile: string,
+        /** The browser's own DevTools endpoint, for a test that wants a connection of its own. */
+        readonly debuggerUrl: string
     ) {}
 
     static async launch(binary: string): Promise<HeadlessChrome> {
@@ -381,7 +383,7 @@ export class HeadlessChrome {
                         `port=${endpoint.elapsedMs}ms, cdp=${Date.now() - startedAt}ms.\n`
                 );
             }
-            return new HeadlessChrome(child, connection, profile);
+            return new HeadlessChrome(child, connection, profile, endpoint.url);
         } catch (error) {
             const primary = asError(error);
             const cleanupErrors: string[] = [];

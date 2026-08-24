@@ -118,11 +118,11 @@ export function fencedSection(
 
 /** Renders the fixed one-line page-state section shared by the stateful tools. */
 export function pageStateLine(
-    snapshot: Pick<PageSnapshot, 'url' | 'title' | 'snapshotId'> & Partial<Pick<PageSnapshot, 'unreadableFrames'>>
+    snapshot: Pick<PageSnapshot, 'url' | 'title' | 'snapshotId' | 'unreadableFrames'>
 ): string {
-    const missing = snapshot.unreadableFrames ?? 0;
-    // Said out loud, because a form that lives in the frame that failed is simply absent from the
-    // snapshot, and nothing else on the page would look wrong.
+    const missing = snapshot.unreadableFrames;
+    // A form inside a frame that was not read is absent from the snapshot, and nothing else on the
+    // page looks wrong, so the count is part of the page state rather than a footnote.
     const frames =
         missing === 0
             ? ''
