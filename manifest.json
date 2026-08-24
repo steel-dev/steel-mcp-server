@@ -2,7 +2,7 @@
     "manifest_version": "0.4",
     "name": "steel-mcp",
     "display_name": "Steel Browser",
-    "version": "2.0.0",
+    "version": "2.0.1",
     "description": "Give Claude a real Chrome browser in the cloud: read pages that block a plain fetch, capture screenshots and PDFs, and work through interactive sites.",
     "long_description": "Claude gets a real Chrome browser in the cloud. Pages that need JavaScript, pages that block scripted requests, pages behind a login: Claude opens them, reads them as clean markdown, and gets to work.\n\nMost questions end with a single read, and a plain read starts no billed browser. When the job takes real steps (signing in, filling a form, stepping through checkout), Claude starts a session and works through it with clicks, keystrokes, and selections.\n\nYou stay in the loop. The session renders live inside the chat; when a password, CAPTCHA, or payment needs your hands, take over in the same window, then hand back and let Claude continue. Claude stops on its own before payment or a final confirmation.\n\nScreenshots and PDFs arrive as links instead of flooding the chat. Page content is treated as untrusted, passwords and credentials are redacted before they touch a log, and every session carries a hard timeout, so a forgotten browser cannot run up your bill.",
     "author": {
