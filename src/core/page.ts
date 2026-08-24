@@ -111,6 +111,8 @@ const WAIT_POLL_INTERVAL_MS = 250;
 interface TargetHandle {
     backendNodeId: number;
     loaderId: string;
+    /** The frame holding the target when it came from a ref; a selector target is in the top document. */
+    frameId?: string | undefined;
     /** Present when the target came from a ref; used for the redaction and identity checks. */
     node?: SnapshotNode | undefined;
     describe: string;
@@ -226,7 +228,7 @@ export class BrowserPage {
      * before any observer installed afterwards could see it, and some navigation commands do not
      * resolve until the navigation they caused has already committed.
      */
-    private async beginChange(): Promise<SettleWatch> {
+    private async beginChange(target?: TargetHandle): Promise<SettleWatch> {
         const baselineMutations = await readMutationCount(this.session);
         return watchForSettle(this.session, {
             budgets: this.budgets,
@@ -234,14 +236,28 @@ export class BrowserPage {
             // Without this the frame filter never runs and an advert iframe navigating looks
             // exactly like the page itself loading.
             mainFrameId: this.mainFrameId,
+            // A form inside an iframe submits by navigating its own frame, which is the change
+            // the caller is waiting for.
+            targetFrameId: target !== undefined && this.inChildFrame(target) ? target.frameId : undefined,
         });
+    }
+
+    /** Whether the target's document is a child frame, whose DOM the settle pass does not observe. */
+    private inChildFrame(target: TargetHandle): boolean {
+        return this.mainFrameId !== undefined && target.frameId !== undefined && target.frameId !== this.mainFrameId;
     }
 
     private async settleNow(
         watch: SettleWatch,
-        focusChanged = false
+        focusChanged = false,
+        target?: TargetHandle
     ): Promise<{ change: ChangeSignal; description: string }> {
-        const change: ChangeSignal = { ...(await watch.finish()), focusChanged };
+        const frameUnobserved = target !== undefined && this.inChildFrame(target);
+        const change: ChangeSignal = {
+            ...(await watch.finish()),
+            focusChanged,
+            ...(frameUnobserved ? { frameUnobserved } : {}),
+        };
         return { change, description: describeChange(change) };
     }
 
@@ -363,6 +379,7 @@ export class BrowserPage {
             return {
                 backendNodeId: resolved.backendNodeId,
                 loaderId: resolved.loaderId,
+                frameId: resolved.frameId,
                 node,
                 describe: `${target} (${resolved.role})`,
             };
@@ -468,13 +485,22 @@ export class BrowserPage {
         ]);
 
         if (target.object?.objectId && topmost.object?.objectId) {
-            const contains = await this.session.send<{ result?: { value?: boolean } }>('Runtime.callFunctionOn', {
-                objectId: target.object.objectId,
-                functionDeclaration: 'function(other) { return this === other || this.contains(other); }',
-                arguments: [{ objectId: topmost.object.objectId }],
-                returnByValue: true,
-            });
-            if (contains.result?.value === true) {
+            let containsHit = false;
+            try {
+                const contains = await this.session.send<{ result?: { value?: boolean } }>('Runtime.callFunctionOn', {
+                    objectId: target.object.objectId,
+                    functionDeclaration: 'function(other) { return this === other || this.contains(other); }',
+                    arguments: [{ objectId: topmost.object.objectId }],
+                    returnByValue: true,
+                });
+                containsHit = contains.result?.value === true;
+            } catch {
+                // The two nodes live in different documents — a target inside a frame under an
+                // element of the page — and Chrome will not pass one to a function on the other.
+                // Nothing in another document can be inside the target, so the hit is a blocker.
+                containsHit = false;
+            }
+            if (containsHit) {
                 cache.set(hitId, { reachesTarget: true });
                 return { kind: 'reachable' };
             }
@@ -592,8 +618,7 @@ export class BrowserPage {
      * real editing pipeline, so the `input` events a controlled component listens for actually
      * fire. Assigning the property directly leaves a framework's own state stale.
      */
-    private async typeInto(target: string, value: string): Promise<TargetHandle> {
-        const handle = await this.resolveTarget(target);
+    private async typeInto(handle: TargetHandle, value: string): Promise<TargetHandle> {
         await this.session.send('DOM.focus', { backendNodeId: handle.backendNodeId });
         await this.session.send('Input.dispatchKeyEvent', {
             type: 'keyDown',
@@ -635,31 +660,32 @@ export class BrowserPage {
             case 'check': {
                 const handle = await this.resolveTarget(this.requireTarget(request));
                 const point = await this.reachablePoint(handle);
-                const baseline = await this.beginChange();
+                const baseline = await this.beginChange(handle);
                 await this.clickAt(point);
-                const { change, description } = await this.settleNow(baseline);
+                const { change, description } = await this.settleNow(baseline, false, handle);
                 this.clearClickFailures();
                 return { summary: `Clicked ${handle.describe}.`, change, changeDescription: description };
             }
             case 'hover': {
                 const handle = await this.resolveTarget(this.requireTarget(request));
                 const point = await this.centreOf(handle);
-                const baseline = await this.beginChange();
+                const baseline = await this.beginChange(handle);
                 await this.session.send('Input.dispatchMouseEvent', {
                     type: 'mouseMoved',
                     x: Math.round(point.x),
                     y: Math.round(point.y),
                 });
-                const { change, description } = await this.settleNow(baseline);
+                const { change, description } = await this.settleNow(baseline, false, handle);
                 return { summary: `Hovered ${handle.describe}.`, change, changeDescription: description };
             }
             case 'type': {
                 if (request.value === undefined) {
                     throw new SteelToolError('The "type" action needs a value.', { code: 'invalid_argument' });
                 }
-                const baseline = await this.beginChange();
-                const handle = await this.typeInto(this.requireTarget(request), request.value);
-                const { change, description } = await this.settleNow(baseline, true);
+                const handle = await this.resolveTarget(this.requireTarget(request));
+                const baseline = await this.beginChange(handle);
+                await this.typeInto(handle, request.value);
+                const { change, description } = await this.settleNow(baseline, true, handle);
                 this.clearClickFailures();
                 return { summary: this.describeTyped(handle, request.value), change, changeDescription: description };
             }
@@ -669,13 +695,19 @@ export class BrowserPage {
                         code: 'invalid_argument',
                     });
                 }
-                const baseline = await this.beginChange();
+                // Every target is resolved before anything is typed, so a stale ref fails the whole
+                // form rather than half of it, and the frame to watch is known before the first key.
+                const handles: TargetHandle[] = [];
+                for (const field of request.fields) handles.push(await this.resolveTarget(field.target));
+                const framed = handles.find(handle => this.inChildFrame(handle));
+                const baseline = await this.beginChange(framed);
                 const summaries: string[] = [];
-                for (const field of request.fields) {
-                    const handle = await this.typeInto(field.target, field.value);
+                for (const [at, field] of request.fields.entries()) {
+                    const handle = handles[at]!;
+                    await this.typeInto(handle, field.value);
                     summaries.push(this.describeTyped(handle, field.value));
                 }
-                const { change, description } = await this.settleNow(baseline, true);
+                const { change, description } = await this.settleNow(baseline, true, framed);
                 this.clearClickFailures();
                 return { summary: summaries.join(' '), change, changeDescription: description };
             }
@@ -689,14 +721,14 @@ export class BrowserPage {
                 const resolved = await this.session.send<{ object?: { objectId?: string } }>('DOM.resolveNode', {
                     backendNodeId: handle.backendNodeId,
                 });
-                const baseline = await this.beginChange();
+                const baseline = await this.beginChange(handle);
                 await this.session.send('Runtime.callFunctionOn', {
                     objectId: resolved.object?.objectId,
                     functionDeclaration:
                         'function(value) { this.value = value; this.dispatchEvent(new Event("input", { bubbles: true })); this.dispatchEvent(new Event("change", { bubbles: true })); }',
                     arguments: [{ value: request.value }],
                 });
-                const { change, description } = await this.settleNow(baseline);
+                const { change, description } = await this.settleNow(baseline, false, handle);
                 this.clearClickFailures();
                 return {
                     summary: `Selected "${request.value}" in ${handle.describe}.`,

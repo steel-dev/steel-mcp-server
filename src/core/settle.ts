@@ -18,6 +18,8 @@ export interface SettleBudgets {
 export interface SettleResult {
     navigated: boolean;
     navigatedToUrl: string | undefined;
+    /** True when the navigation happened in the target's frame rather than in the page itself. */
+    navigatedInFrame?: boolean | undefined;
     domMutated: boolean;
     /** True when a budget expired before the page went quiet. */
     timedOut: boolean;
@@ -27,6 +29,14 @@ export interface SettleOptions {
     budgets: SettleBudgets;
     /** When given, navigations in other frames are ignored so an iframe cannot look like a load. */
     mainFrameId?: string | undefined;
+    /**
+     * The frame holding the action's target, when that is not the main frame.
+     *
+     * A form inside an iframe submits by navigating its own frame, so that navigation counts as a
+     * change too. A subframe never fires the page's load event, so the pass completes when the
+     * frame reports that it stopped loading.
+     */
+    targetFrameId?: string | undefined;
     /**
      * The mutation counter read before the action, from {@link readMutationCount}.
      *
@@ -153,24 +163,31 @@ export interface SettleWatch {
  * caused, and the action reports that nothing happened.
  */
 export function watchForSettle(session: CdpSession, options: SettleOptions): SettleWatch {
-    const { budgets, mainFrameId } = options;
+    const { budgets, mainFrameId, targetFrameId } = options;
     let navigatedToUrl: string | undefined;
+    let navigatedFrameId: string | undefined;
     let navigationType = '';
     let loadObserved = false;
     let commitObserved = false;
+    let frameStoppedLoading = false;
     let onComplete: (() => void) | undefined;
     const completion = new Promise<void>(resolve => {
         onComplete = resolve;
     });
 
-    const settled = () => loadObserved || (commitObserved && isHistoryNavigation(navigationType));
+    /** Whether a frame's navigation counts: the page's own, or the frame the target sits in. */
+    const watched = (frameId: unknown): boolean =>
+        !mainFrameId || frameId === mainFrameId || (targetFrameId !== undefined && frameId === targetFrameId);
+    const settled = () =>
+        loadObserved || frameStoppedLoading || (commitObserved && isHistoryNavigation(navigationType));
 
     const offStarted = session.on('Page.frameStartedNavigating', (params: CdpEventParams) => {
         const type = String(params.navigationType ?? '');
         if (NON_LOADING_NAVIGATION_TYPES.has(type)) return;
-        if (mainFrameId && params.frameId !== mainFrameId) return;
+        if (!watched(params.frameId)) return;
         if (navigatedToUrl !== undefined) return;
         navigatedToUrl = typeof params.url === 'string' ? params.url : undefined;
+        navigatedFrameId = typeof params.frameId === 'string' ? params.frameId : undefined;
         navigationType = type;
         if (settled()) onComplete?.();
     });
@@ -182,11 +199,17 @@ export function watchForSettle(session: CdpSession, options: SettleOptions): Set
 
     const offNavigated = session.on('Page.frameNavigated', (params: CdpEventParams) => {
         const frame = params.frame as { id?: string } | undefined;
-        if (mainFrameId && frame?.id !== mainFrameId) return;
+        if (!watched(frame?.id)) return;
         commitObserved = true;
         // A back/forward-cache restore commits without ever firing a load event, so a history
         // navigation would otherwise burn the whole budget on every cross-document go_back.
         if (isHistoryNavigation(navigationType)) onComplete?.();
+    });
+
+    const offStopped = session.on('Page.frameStoppedLoading', (params: CdpEventParams) => {
+        if (navigatedFrameId === undefined || params.frameId !== navigatedFrameId) return;
+        frameStoppedLoading = true;
+        onComplete?.();
     });
 
     return {
@@ -202,6 +225,7 @@ export function watchForSettle(session: CdpSession, options: SettleOptions): Set
                 offStarted();
                 offLoad();
                 offNavigated();
+                offStopped();
             }
 
             let domMutated: boolean;
@@ -225,7 +249,18 @@ export function watchForSettle(session: CdpSession, options: SettleOptions): Set
                 domMutated = true;
             }
 
-            return { navigated: navigatedToUrl !== undefined, navigatedToUrl, domMutated, timedOut };
+            const navigatedInFrame =
+                navigatedToUrl !== undefined &&
+                targetFrameId !== undefined &&
+                navigatedFrameId === targetFrameId &&
+                navigatedFrameId !== mainFrameId;
+            return {
+                navigated: navigatedToUrl !== undefined,
+                navigatedToUrl,
+                ...(navigatedInFrame ? { navigatedInFrame } : {}),
+                domMutated,
+                timedOut,
+            };
         },
     };
 }

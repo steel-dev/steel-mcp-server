@@ -71,11 +71,33 @@ export interface CaptureOptions {
 export interface ResolvedRef {
     ref: string;
     backendNodeId: number;
+    /** The loader of the top document when the ref was issued. */
     loaderId: string;
+    /** The frame whose document holds the node. */
+    frameId: string;
+    /** The loader of that frame's document, when the frame tree reported the frame. */
+    frameLoaderId?: string | undefined;
     role: string;
     name: string;
     snapshotId: string;
     center?: { x: number; y: number } | undefined;
+}
+
+interface FrameTreeNode {
+    frame?: { id?: string; loaderId?: string; url?: string };
+    childFrames?: FrameTreeNode[];
+}
+
+/** Reads every frame's current loader out of a `Page.getFrameTree` answer. */
+function readFrameLoaders(tree: FrameTreeNode | undefined): Map<string, string> {
+    const loaders = new Map<string, string>();
+    const walk = (node: FrameTreeNode | undefined): void => {
+        if (!node) return;
+        if (node.frame?.id && node.frame.loaderId) loaders.set(node.frame.id, node.frame.loaderId);
+        for (const child of node.childFrames ?? []) walk(child);
+    };
+    walk(tree);
+    return loaders;
 }
 
 interface RefRecord extends ResolvedRef {
@@ -599,6 +621,8 @@ export class PageState {
     private refCounter = 0;
     private snapshotCounter = 0;
     private currentLoaderId = '';
+    /** Each frame's current loader, so a ref into a frame that reloaded is caught as stale. */
+    private frameLoaders = new Map<string, string>();
     private latest: PageSnapshot | undefined;
 
     /** The most recent snapshot, or undefined if the page has never been read. */
@@ -608,7 +632,7 @@ export class PageState {
 
     async capture(session: CdpSession, options: CaptureOptions): Promise<PageSnapshot> {
         const [frameTree, axTree, domSnapshot, metrics] = await Promise.all([
-            session.send<{ frameTree?: { frame?: { loaderId?: string; url?: string } } }>('Page.getFrameTree'),
+            session.send<{ frameTree?: FrameTreeNode }>('Page.getFrameTree'),
             session.send<{ nodes?: AxNode[] }>('Accessibility.getFullAXTree'),
             session.send('DOMSnapshot.captureSnapshot', {
                 computedStyles: [...COMPUTED_STYLES],
@@ -627,6 +651,8 @@ export class PageState {
             this.refByNode.clear();
             this.currentLoaderId = loaderId;
         }
+        const frameLoaders = readFrameLoaders(frameTree.frameTree);
+        this.frameLoaders = frameLoaders;
 
         const documents = readDomDocuments(domSnapshot);
         const placements = resolveFramePlacements(documents);
@@ -744,7 +770,10 @@ export class PageState {
 
             let ref: string | undefined;
             if (targetable && backendNodeId !== undefined) {
-                const key = `${loaderId}_${backendNodeId}`;
+                // A frame that reloads gets a new loader while the page keeps its own, so identity
+                // is keyed on the loader of the document that actually holds the node.
+                const frameLoaderId = frameLoaders.get(frameId);
+                const key = `${frameLoaderId ?? loaderId}_${backendNodeId}`;
                 ref = this.refByNode.get(key);
                 if (!ref) {
                     this.refCounter += 1;
@@ -755,6 +784,8 @@ export class PageState {
                     ref,
                     backendNodeId,
                     loaderId,
+                    frameId,
+                    frameLoaderId,
                     role,
                     name,
                     snapshotId,
@@ -858,12 +889,21 @@ export class PageState {
             );
         }
         const currentSnapshotId = this.latest?.snapshotId ?? record.snapshotId;
+        // A frame that loaded a new document keeps its id and changes its loader; a frame that is
+        // gone altogether has no loader any more, and its node went with it.
+        const frameLoaderNow = this.frameLoaders.get(record.frameId);
+        const frameReloaded =
+            record.frameLoaderId !== undefined &&
+            frameLoaderNow !== undefined &&
+            frameLoaderNow !== record.frameLoaderId;
         const reason: StaleRefReason | undefined =
             record.loaderId !== this.currentLoaderId
                 ? 'page_navigated'
-                : record.lastSeenSnapshotId !== currentSnapshotId
-                  ? 'node_removed'
-                  : undefined;
+                : frameReloaded
+                  ? 'frame_navigated'
+                  : record.lastSeenSnapshotId !== currentSnapshotId
+                    ? 'node_removed'
+                    : undefined;
 
         if (reason) {
             throw staleRefError(ref, {

@@ -430,6 +430,44 @@ describe('PageState.capture — frames', () => {
         expect(snapshot.text).not.toContain('topsecret');
     });
 
+    it('records the frame a ref lives in', async () => {
+        const state = new PageState();
+        const { session } = fixtureSession(page([BUTTON, iframe(formFrame([FRAME_FIELD]))]));
+        const snapshot = await state.capture(session, {});
+        const field = snapshot.nodes.find(node => node.name === 'Address');
+        const save = snapshot.nodes.find(node => node.name === 'Save');
+        expect(state.resolveRef(field?.ref ?? '').frameId).toBe('frame-1');
+        expect(state.resolveRef(save?.ref ?? '').frameId).toBe('main-frame');
+    });
+
+    it('reports a frame ref as stale once that frame has loaded a new document', async () => {
+        const state = new PageState();
+        const fixture = fixtureSession(page([BUTTON, iframe(formFrame([FRAME_FIELD], { loaderId: 'form-step-1' }))]));
+        const first = await state.capture(fixture.session, {});
+        const fieldRef = first.nodes.find(node => node.name === 'Address')?.ref ?? '';
+        const saveRef = first.nodes.find(node => node.name === 'Save')?.ref ?? '';
+
+        // The form moved to its second step: a new document with new node ids inside the frame,
+        // while the top document, and its loader, stayed exactly as they were.
+        const stepTwo = formFrame([{ ...FRAME_FIELD, backendNodeId: 101, name: 'Postcode' }], {
+            loaderId: 'form-step-2',
+        });
+        fixture.setPage(page([BUTTON, iframe(stepTwo)]));
+        const second = await state.capture(fixture.session, {});
+
+        let error: SteelToolError | undefined;
+        try {
+            state.resolveRef(fieldRef);
+        } catch (thrown) {
+            error = thrown as SteelToolError;
+        }
+        expect(error?.code).toBe('stale_ref');
+        expect(error?.details).toMatchObject({ reason: 'frame_navigated' });
+        expect(error?.message).toMatch(/frame/i);
+        expect(state.resolveRef(saveRef).backendNodeId, 'the top document did not change').toBe(10);
+        expect(second.nodes.find(node => node.name === 'Postcode')?.ref).not.toBe(fieldRef);
+    });
+
     it('counts a frame it could not read, rather than dropping it in silence', async () => {
         const gone = formFrame([], { frameId: 'frame-2', detached: true });
         const { session } = fixtureSession(page([iframe(gone, { backendNodeId: 22, name: 'Advert' })]));

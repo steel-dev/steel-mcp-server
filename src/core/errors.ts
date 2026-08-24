@@ -489,10 +489,16 @@ export function navigationFailedError(url: string, errorText: string): SteelTool
 }
 
 /** Why a `@eN` reference no longer resolves. */
-export type StaleRefReason = 'page_navigated' | 'node_removed' | 'role_or_name_changed' | 'snapshot_superseded';
+export type StaleRefReason =
+    | 'page_navigated'
+    | 'frame_navigated'
+    | 'node_removed'
+    | 'role_or_name_changed'
+    | 'snapshot_superseded';
 
 const STALE_REASON_TEXT: Record<StaleRefReason, string> = {
     page_navigated: 'the page navigated to a new document',
+    frame_navigated: 'the frame holding it loaded a new document',
     node_removed: 'the node was removed from the DOM',
     role_or_name_changed: 'the element changed role or accessible name',
     snapshot_superseded: 'the snapshot it came from has been superseded',

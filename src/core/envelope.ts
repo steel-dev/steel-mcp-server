@@ -40,6 +40,11 @@ export function renderEnvelope(sections: EnvelopeSections): string {
 /** What the page did in response to an action, beyond what `settle` alone can see. */
 export interface ChangeSignal extends SettleResult {
     focusChanged?: boolean | undefined;
+    /**
+     * True when the target sits in a child frame. The settle pass observes the page's own DOM,
+     * so a change confined to that frame goes unseen, and silence is not evidence of no effect.
+     */
+    frameUnobserved?: boolean | undefined;
 }
 
 /**
@@ -52,7 +57,10 @@ export interface ChangeSignal extends SettleResult {
 export function describeChange(signal: ChangeSignal): string {
     const parts: string[] = [];
     if (signal.navigated) {
-        parts.push(`Navigated to ${signal.navigatedToUrl ?? 'a new page'}.`);
+        const destination = signal.navigatedToUrl ?? 'a new page';
+        parts.push(
+            signal.navigatedInFrame ? `The target's frame navigated to ${destination}.` : `Navigated to ${destination}.`
+        );
     }
     if (signal.domMutated) {
         parts.push('The DOM changed.');
@@ -62,9 +70,15 @@ export function describeChange(signal: ChangeSignal): string {
     }
     if (parts.length === 0) {
         parts.push(
-            'Nothing changed: no navigation, no DOM mutation and no focus change. The click may have hit the ' +
-                'wrong element, or the target may not react to this action. Take a fresh snapshot before retrying.'
+            signal.frameUnobserved
+                ? 'No change was observed on the page, but the target is inside a frame whose own DOM changes are ' +
+                      'not observed, so the action may well have worked. Take a fresh snapshot to see the result; ' +
+                      'do not repeat the action on the strength of this message.'
+                : 'Nothing changed: no navigation, no DOM mutation and no focus change. The click may have hit the ' +
+                      'wrong element, or the target may not react to this action. Take a fresh snapshot before retrying.'
         );
+    } else if (signal.frameUnobserved && !signal.domMutated && !signal.navigated) {
+        parts.push("DOM changes inside the target's frame are not observed; a fresh snapshot shows the result.");
     }
     if (signal.timedOut) {
         parts.push('The page was still busy when the wait budget expired, so later changes may not be reflected.');

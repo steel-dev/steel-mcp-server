@@ -95,7 +95,12 @@ describe('watchForSettle', () => {
     it('unsubscribes everything once finished', async () => {
         const { session, listeners } = fakeSession({ mutationResult: { mutated: false } });
         await watchForSettle(session, { budgets: resolveSettleBudgets(1) }).finish();
-        for (const event of ['Page.frameStartedNavigating', 'Page.loadEventFired', 'Page.frameNavigated']) {
+        for (const event of [
+            'Page.frameStartedNavigating',
+            'Page.loadEventFired',
+            'Page.frameNavigated',
+            'Page.frameStoppedLoading',
+        ]) {
             expect(listeners.get(event)?.size ?? 0, `${event} listener leaked`).toBe(0);
         }
     });
@@ -249,5 +254,68 @@ describe('settle', () => {
         };
         const result = await settle(session, { budgets: resolveSettleBudgets(1) });
         expect(result.domMutated).toBe(true);
+    });
+});
+
+describe('watchForSettle — a target inside a frame', () => {
+    it("counts a navigation in the target's frame and settles when that frame stops loading", async () => {
+        const { session, emit } = fakeSession({ mutationResult: { mutated: false } });
+        // A subframe never fires the page's load event, so without the frame's own stop signal the
+        // watch would wait out the whole navigation budget.
+        const budgets = { ...resolveSettleBudgets(1), navigationMs: 10_000 };
+        const watch = watchForSettle(session, { budgets, mainFrameId: 'main', targetFrameId: 'frame-1' });
+
+        emit('Page.frameStartedNavigating', {
+            frameId: 'frame-1',
+            url: 'https://forms.example.com/step-2',
+            navigationType: 'differentDocument',
+        });
+        emit('Page.frameNavigated', { frame: { id: 'frame-1', url: 'https://forms.example.com/step-2' } });
+        emit('Page.frameStoppedLoading', { frameId: 'frame-1' });
+
+        const started = Date.now();
+        const result = await watch.finish();
+        expect(result).toMatchObject({
+            navigated: true,
+            navigatedToUrl: 'https://forms.example.com/step-2',
+            navigatedInFrame: true,
+            timedOut: false,
+        });
+        expect(Date.now() - started).toBeLessThan(2_000);
+    });
+
+    it('still ignores a navigation in a frame that is neither the main frame nor the target', async () => {
+        const { session, emit } = fakeSession({ mutationResult: { mutated: false } });
+        const watch = watchForSettle(session, {
+            budgets: resolveSettleBudgets(1),
+            mainFrameId: 'main',
+            targetFrameId: 'frame-1',
+        });
+        emit('Page.frameStartedNavigating', {
+            frameId: 'an-advert-iframe',
+            url: 'https://ads.test/',
+            navigationType: 'differentDocument',
+        });
+        const result = await watch.finish();
+        expect(result.navigated).toBe(false);
+        expect(result.navigatedInFrame).toBeFalsy();
+    });
+
+    it('does not mark a main-frame navigation as a frame one', async () => {
+        const { session, emit } = fakeSession({ mutationResult: { mutated: false } });
+        const watch = watchForSettle(session, {
+            budgets: resolveSettleBudgets(1),
+            mainFrameId: 'main',
+            targetFrameId: 'frame-1',
+        });
+        emit('Page.frameStartedNavigating', {
+            frameId: 'main',
+            url: 'https://example.com/next',
+            navigationType: 'differentDocument',
+        });
+        emit('Page.loadEventFired', {});
+        const result = await watch.finish();
+        expect(result.navigated).toBe(true);
+        expect(result.navigatedInFrame).toBeFalsy();
     });
 });

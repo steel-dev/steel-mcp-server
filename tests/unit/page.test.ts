@@ -762,3 +762,137 @@ describe('settle budget wiring', () => {
         expect(resolveSettleBudgets(2).navigationMs).toBeGreaterThan(resolveSettleBudgets(1).navigationMs);
     });
 });
+
+describe('BrowserPage.act — inside a frame', () => {
+    const FRAME_BUTTON: FixtureNode = {
+        tag: 'BUTTON',
+        backendNodeId: 110,
+        role: 'button',
+        name: 'Send',
+        bounds: [10, 20, 80, 30],
+    };
+    const FRAME_FIELD: FixtureNode = {
+        tag: 'INPUT',
+        backendNodeId: 111,
+        role: 'textbox',
+        name: 'Address',
+        bounds: [10, 60, 150, 20],
+    };
+
+    /** The top document's own button next to a same-origin form frame with a field and a button. */
+    function framedPage(): FixturePage {
+        return page([
+            SAVE_BUTTON,
+            {
+                tag: 'IFRAME',
+                backendNodeId: 20,
+                role: 'Iframe',
+                name: 'Form',
+                bounds: [0, 300, 800, 400],
+                frame: {
+                    frameId: 'frame-1',
+                    loaderId: 'form-loader-1',
+                    root: {
+                        tag: 'HTML',
+                        backendNodeId: 99,
+                        role: 'RootWebArea',
+                        name: 'Form',
+                        bounds: [0, 0, 800, 400],
+                        children: [FRAME_FIELD, FRAME_BUTTON],
+                    },
+                },
+            },
+        ]);
+    }
+
+    /** Emits what Chrome sends when only the form frame navigates, as the frame's button is released. */
+    function navigateFrameOnClick(fixture: FixtureSession): void {
+        fixture.stub('Input.dispatchMouseEvent', params => {
+            if (params.type === 'mouseReleased') {
+                fixture.emit('Page.frameStartedNavigating', {
+                    frameId: 'frame-1',
+                    url: 'https://forms.example.com/step-2',
+                    navigationType: 'differentDocument',
+                });
+                fixture.emit('Page.frameNavigated', {
+                    frame: { id: 'frame-1', url: 'https://forms.example.com/step-2' },
+                });
+                fixture.emit('Page.frameStoppedLoading', { frameId: 'frame-1' });
+            }
+            return {};
+        });
+    }
+
+    async function refOf(browserPage: BrowserPage, name: string): Promise<string> {
+        const snapshot = await browserPage.snapshot({});
+        const ref = snapshot.nodes.find(node => node.name === name)?.ref;
+        if (!ref) throw new Error(`no ref for ${name} in:\n${snapshot.text}`);
+        return ref;
+    }
+
+    it('names the covering element when a top-document overlay sits over a control inside a frame', async () => {
+        // The target and the element on top of it live in different documents, so Chrome refuses
+        // to pass one to a function on the other. That refusal is the answer: the overlay is in the way.
+        const fixture = actionFixture(fixtureSession(framedPage()), { hitBackendNodeId: 77 });
+        fixture.stub('Runtime.callFunctionOn', () => {
+            throw new SteelToolError(
+                'Runtime.callFunctionOn failed: Argument should belong to the same JavaScript world as target object',
+                { code: 'steel_error' }
+            );
+        });
+        const browserPage = await openPage(fixture);
+        const ref = await refOf(browserPage, 'Send');
+
+        const error = await catchAsync(browserPage.act({ action: 'click', target: ref }));
+        expect(error.code).toBe('click_blocked');
+        expect(error.message).toContain('div#consent-banner');
+        expect(fixture.sent.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+    });
+
+    it('says the frame was not observed, rather than that nothing changed, after clicking inside it', async () => {
+        const fixture = actionFixture(fixtureSession(framedPage()), { hitBackendNodeId: 110 });
+        const browserPage = await openPage(fixture);
+        const ref = await refOf(browserPage, 'Send');
+
+        const outcome = await browserPage.act({ action: 'click', target: ref });
+        expect(outcome.changeDescription).toMatch(/frame/i);
+        expect(outcome.changeDescription).not.toMatch(/wrong element/i);
+        expect(outcome.changeDescription).toMatch(/fresh snapshot/i);
+    });
+
+    it('says the same after typing into a field inside the frame', async () => {
+        const fixture = actionFixture(fixtureSession(framedPage()), { hitBackendNodeId: 111 });
+        const browserPage = await openPage(fixture);
+        const ref = await refOf(browserPage, 'Address');
+
+        const outcome = await browserPage.act({ action: 'type', target: ref, value: '1 High Street' });
+        expect(outcome.summary).toContain('1 High Street');
+        expect(outcome.changeDescription).toMatch(/frame/i);
+        expect(outcome.changeDescription).not.toMatch(/wrong element/i);
+    });
+
+    it("counts a navigation of the target's own frame as a change", async () => {
+        const fixture = actionFixture(fixtureSession(framedPage()), { hitBackendNodeId: 110 });
+        navigateFrameOnClick(fixture);
+        const browserPage = await openPage(fixture);
+        const ref = await refOf(browserPage, 'Send');
+
+        const outcome = await browserPage.act({ action: 'click', target: ref });
+        expect(outcome.change.navigated).toBe(true);
+        expect(outcome.change.timedOut).toBe(false);
+        expect(outcome.changeDescription).toMatch(/frame/i);
+        expect(outcome.changeDescription).toContain('https://forms.example.com/step-2');
+        expect(outcome.changeDescription).not.toMatch(/nothing changed/i);
+    });
+
+    it('still ignores that frame navigating when the target is in the top document', async () => {
+        const fixture = actionFixture(fixtureSession(framedPage()), { hitBackendNodeId: 10 });
+        navigateFrameOnClick(fixture);
+        const browserPage = await openPage(fixture);
+        const ref = await refOf(browserPage, 'Save');
+
+        const outcome = await browserPage.act({ action: 'click', target: ref });
+        expect(outcome.change.navigated).toBe(false);
+        expect(outcome.changeDescription).not.toMatch(/frame/i);
+    });
+});

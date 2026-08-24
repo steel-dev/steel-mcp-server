@@ -74,6 +74,46 @@ describe('describeChange', () => {
         ).toMatch(/focus/i);
     });
 
+    it('attributes a navigation to the target frame when that is where it happened', () => {
+        expect(
+            describeChange({
+                navigated: true,
+                navigatedToUrl: 'https://forms.example.com/step-2',
+                navigatedInFrame: true,
+                domMutated: false,
+                timedOut: false,
+            })
+        ).toMatch(/frame.*navigated to https:\/\/forms\.example\.com\/step-2/i);
+    });
+
+    it('does not claim nothing changed when the target sits in a frame it could not observe', () => {
+        const text = describeChange({
+            navigated: false,
+            navigatedToUrl: undefined,
+            domMutated: false,
+            timedOut: false,
+            frameUnobserved: true,
+        });
+        expect(text).not.toMatch(/wrong element/i);
+        expect(text).toMatch(/frame/i);
+        expect(text).toMatch(/fresh snapshot/i);
+        expect(text).toMatch(/not repeat/i);
+    });
+
+    it('adds the frame caveat to a focus-only change, since typing into a frame shows nothing else', () => {
+        const text = describeChange({
+            navigated: false,
+            navigatedToUrl: undefined,
+            domMutated: false,
+            timedOut: false,
+            focusChanged: true,
+            frameUnobserved: true,
+        });
+        expect(text).toMatch(/focus/i);
+        expect(text).toMatch(/frame/i);
+        expect(text).not.toMatch(/nothing changed/i);
+    });
+
     it('flags that the page was still busy when a budget expired', () => {
         expect(
             describeChange({ navigated: false, navigatedToUrl: undefined, domMutated: true, timedOut: true })
