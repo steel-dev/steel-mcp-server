@@ -10,7 +10,7 @@ through interactive sites by clicking, typing, and filling forms.
 Unlike v1's screenshot-and-numbered-box loop, v2 reads pages as markdown or accessibility trees,
 shows small screenshots through MCP image blocks without using pixels for interaction, and makes browser sessions explicit.
 
-> **Status:** `2.0.0-rc.9`. Run the server locally over stdio, or run the hosted endpoint
+> **Status:** `2.0.0`. Run the server locally over stdio, or run the hosted endpoint
 > yourself — it is in the package and documented below. `mcp.steel.dev` is not live yet.
 
 <a href="https://glama.ai/mcp/servers/steel-dev/steel-mcp-server"><img width="380" height="200" src="https://glama.ai/mcp/servers/steel-dev/steel-mcp-server/badge" alt="Steel MCP Server listing on Glama" /></a>
