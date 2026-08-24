@@ -336,11 +336,23 @@ describe('PageState.capture — frames', () => {
         );
     });
 
-    it('does not read a frame painted at zero opacity', async () => {
+    it('does not read a frame painted at zero opacity, and counts it as unread', async () => {
+        // A hosted form engine mounts its frame at opacity 0 and fades it in once sized, so a
+        // snapshot taken in that window has to say a frame is missing rather than look complete.
         const invisible = iframe(formFrame([FRAME_FIELD]), { computed: { opacity: '0' } });
-        const { session } = fixtureSession(page([invisible]));
+        const fixture = fixtureSession(page([invisible]));
+        const snapshot = await new PageState().capture(fixture.session, {});
+        expect(snapshot.nodes.find(node => node.name === 'Address')).toBeUndefined();
+        expect(fixture.sent.filter(call => call.method === 'Accessibility.getFullAXTree')).toHaveLength(1);
+        expect(snapshot.unreadableFrames).toBe(1);
+    });
+
+    it('counts a visibility-hidden frame as unread too', async () => {
+        const hidden = iframe(formFrame([FRAME_FIELD]), { visibility: 'hidden' });
+        const { session } = fixtureSession(page([hidden]));
         const snapshot = await new PageState().capture(session, {});
         expect(snapshot.nodes.find(node => node.name === 'Address')).toBeUndefined();
+        expect(snapshot.unreadableFrames).toBe(1);
     });
 
     it('marks a node scrolled out of sight inside its frame as off-screen', async () => {
@@ -353,12 +365,69 @@ describe('PageState.capture — frames', () => {
         expect(snapshot.nodes.find(node => node.name === 'Address')?.inViewport).toBe(false);
     });
 
-    it('does not read a frame its owner never laid out', async () => {
+    it('does not read a frame its owner never laid out, and does not count it either', async () => {
+        // A frame with no box shows nothing whatever happens next, unlike one that is merely
+        // painted away, so it is not a frame the caller is missing.
         const hidden = iframe(formFrame([FRAME_FIELD]), { bounds: [0, 0, 0, 0] });
         const fixture = fixtureSession(page([BUTTON, hidden]));
         const snapshot = await new PageState().capture(fixture.session, {});
         expect(snapshot.nodes.find(node => node.name === 'Address')).toBeUndefined();
         expect(fixture.sent.filter(call => call.method === 'Accessibility.getFullAXTree')).toHaveLength(1);
+        expect(snapshot.unreadableFrames).toBe(0);
+    });
+
+    it('reads at most 24 frames and counts the rest', async () => {
+        const frames = Array.from({ length: 25 }, (_, at) =>
+            iframe(
+                formFrame([{ ...FRAME_FIELD, backendNodeId: 1000 + at, name: `Field ${at}` }], {
+                    frameId: `frame-${at}`,
+                    root: {
+                        tag: 'HTML',
+                        backendNodeId: 2000 + at,
+                        role: 'RootWebArea',
+                        name: 'Form',
+                        bounds: [0, 0, 800, 600],
+                    },
+                }),
+                { backendNodeId: 3000 + at, name: `Frame ${at}`, bounds: [0, 700 * at, 800, 600] }
+            )
+        );
+        const fixture = fixtureSession(page(frames));
+        const snapshot = await new PageState().capture(fixture.session, {});
+        const reads = fixture.sent.filter(call => call.method === 'Accessibility.getFullAXTree');
+        expect(reads, 'the top document plus the capped frames').toHaveLength(25);
+        expect(snapshot.unreadableFrames).toBe(1);
+        expect(
+            snapshot.nodes.find(node => node.name === 'Field 24'),
+            'the frame past the cap'
+        ).toBeUndefined();
+    });
+
+    it('propagates a transport failure while reading a frame, instead of reporting a partial page', async () => {
+        // Only a frame that went away is a per-frame condition. A dead session is not, and a
+        // snapshot that hides it behind "one frame could not be read" sends the caller on to act
+        // against a browser that is gone.
+        const broken = formFrame([FRAME_FIELD], { readError: 'WebSocket is not open: readyState 3 (CLOSED)' });
+        const { session } = fixtureSession(page([iframe(broken)]));
+        await expect(new PageState().capture(session, {})).rejects.toThrow(/WebSocket is not open/);
+    });
+
+    it('redacts a value it cannot vouch for, when the frame re-rendered after the DOM snapshot', async () => {
+        // The frame's tree is read a round trip after the DOM snapshot. A frame that hydrated in
+        // between reports node ids the snapshot never saw, so nothing is known about the field
+        // behind a value — including whether it is a secret. Unknown means redacted.
+        const secret: FixtureNode = {
+            ...FRAME_FIELD,
+            attributes: { name: 'cvv', type: 'text' },
+            inputValue: 'topsecret',
+        };
+        const { session } = fixtureSession(page([iframe(formFrame([secret], { rerendered: true }))]));
+        const snapshot = await new PageState().capture(session, {});
+        const field = snapshot.nodes.find(node => node.name === 'Address');
+        expect(field, 'the field is still reported').toBeDefined();
+        expect(field?.sensitive).toBe(true);
+        expect(field?.value).toBe('[redacted:9 chars]');
+        expect(snapshot.text).not.toContain('topsecret');
     });
 
     it('counts a frame it could not read, rather than dropping it in silence', async () => {

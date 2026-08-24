@@ -31,10 +31,19 @@ export interface FixtureNode {
 export interface FixtureFrame {
     root: FixtureNode;
     frameId: string;
+    /** The loader of the frame's current document. Defaults to one derived from the frame id. */
+    loaderId?: string;
     url?: string;
     scroll?: { x: number; y: number };
     /** Models a frame that went away between the DOM snapshot and the read of its tree. */
     detached?: boolean;
+    /** Models a transport or session failure while reading this frame's tree. */
+    readError?: string;
+    /**
+     * Models a frame that replaced its DOM between the DOM snapshot and the read of its tree: the
+     * accessibility tree names backend node ids the DOM snapshot has never seen.
+     */
+    rerendered?: boolean;
 }
 
 export interface FixturePage {
@@ -56,13 +65,20 @@ interface FlatNode {
 /** One document's worth of the fixture: its own nodes, indices and frame identity. */
 interface FixtureDocument {
     frameId: string;
+    loaderId: string;
     url: string;
     scroll: { x: number; y: number };
     flat: FlatNode[];
     detached: boolean;
+    readError?: string | undefined;
+    /** Added to every backend node id the accessibility tree reports, to model a re-rendered frame. */
+    axIdOffset: number;
     /** Which node of which document holds this one, absent on the top document. */
     owner?: { documentIndex: number; nodeIndex: number };
 }
+
+/** Backend node ids a re-rendered frame reports, chosen to collide with nothing the fixture issues. */
+const RERENDERED_ID_OFFSET = 100_000;
 
 /** Flattens one document, stopping at an iframe rather than walking into the document it holds. */
 function flatten(root: FixtureNode): FlatNode[] {
@@ -81,10 +97,12 @@ function collectDocuments(page: FixturePage): FixtureDocument[] {
     const documents: FixtureDocument[] = [
         {
             frameId: page.frameId ?? 'main-frame',
+            loaderId: page.loaderId ?? 'loader-1',
             url: page.url ?? 'https://example.com/',
             scroll: page.scroll ?? { x: 0, y: 0 },
             flat: flatten(page.root),
             detached: false,
+            axIdOffset: 0,
         },
     ];
 
@@ -94,15 +112,36 @@ function collectDocuments(page: FixturePage): FixtureDocument[] {
             if (!frame) continue;
             documents.push({
                 frameId: frame.frameId,
+                loaderId: frame.loaderId ?? `loader-${frame.frameId}`,
                 url: frame.url ?? 'https://example.com/frame',
                 scroll: frame.scroll ?? { x: 0, y: 0 },
                 flat: flatten(frame.root),
                 detached: frame.detached ?? false,
+                readError: frame.readError,
+                axIdOffset: frame.rerendered ? RERENDERED_ID_OFFSET : 0,
                 owner: { documentIndex: at, nodeIndex: entry.index },
             });
         }
     }
     return documents;
+}
+
+interface FrameTree {
+    frame: { id: string; loaderId: string; url: string };
+    childFrames?: FrameTree[];
+}
+
+/** The `Page.getFrameTree` answer: every document nested under the one that holds it. */
+function frameTreeOf(documents: FixtureDocument[], at: number): FrameTree {
+    const document = documents[at]!;
+    const children = documents
+        .map((candidate, index) => ({ candidate, index }))
+        .filter(({ candidate }) => candidate.owner?.documentIndex === at)
+        .map(({ index }) => frameTreeOf(documents, index));
+    return {
+        frame: { id: document.frameId, loaderId: document.loaderId, url: document.url },
+        ...(children.length > 0 ? { childFrames: children } : {}),
+    };
 }
 
 class StringTable {
@@ -134,7 +173,7 @@ const DEFAULT_COMPUTED: Record<string, string> = {
     'padding-top': '0px',
 };
 
-function buildAxTree(flat: FlatNode[]) {
+function buildAxTree(flat: FlatNode[], idOffset: number) {
     const axNodes = flat
         .filter(entry => entry.node.role !== undefined)
         .map(entry => {
@@ -153,7 +192,7 @@ function buildAxTree(flat: FlatNode[]) {
                     value: { type: typeof value, value },
                 })),
                 childIds,
-                backendDOMNodeId: node.backendNodeId,
+                backendDOMNodeId: node.backendNodeId + idOffset,
                 parentId: entry.parentIndex >= 0 ? String(entry.parentIndex) : undefined,
             };
         });
@@ -262,15 +301,7 @@ export function fixtureSession(initialPage: FixturePage): FixtureSession {
             const documents = collectDocuments(page);
             switch (method) {
                 case 'Page.getFrameTree':
-                    return {
-                        frameTree: {
-                            frame: {
-                                id: page.frameId ?? 'main-frame',
-                                loaderId: page.loaderId ?? 'loader-1',
-                                url: page.url ?? 'https://example.com/',
-                            },
-                        },
-                    } as T;
+                    return { frameTree: frameTreeOf(documents, 0) } as T;
                 case 'Accessibility.getFullAXTree': {
                     // Chrome answers for one frame: the page's own when asked for no frame in
                     // particular, and it refuses a frame it does not have.
@@ -278,7 +309,8 @@ export function fixtureSession(initialPage: FixturePage): FixtureSession {
                     const document =
                         asked === undefined ? documents[0] : documents.find(entry => entry.frameId === asked);
                     if (!document || document.detached) throw new Error('Frame with the given frameId is not found.');
-                    return buildAxTree(document.flat) as T;
+                    if (document.readError !== undefined) throw new Error(document.readError);
+                    return buildAxTree(document.flat, document.axIdOffset) as T;
                 }
                 case 'DOMSnapshot.captureSnapshot':
                     return buildDomSnapshot(documents, page) as T;

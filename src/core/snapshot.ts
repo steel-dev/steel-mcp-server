@@ -441,12 +441,26 @@ function isVisibleFrame(facts: DomFacts | undefined): boolean {
     return isRendered(facts) && pixels(facts.styles.opacity || '1') > 0;
 }
 
-/** Whether the layout engine gave the element a visible box of its own. */
-function isRendered(facts: DomFacts | undefined): facts is DomFacts {
+/** Whether the layout engine gave the element a box with area. */
+function hasBox(facts: DomFacts | undefined): facts is DomFacts {
     if (!facts?.bounds) return false;
     const [, , width, height] = facts.bounds;
-    if (width <= 0 || height <= 0) return false;
-    return facts.styles.visibility !== 'hidden' && facts.styles.visibility !== 'collapse';
+    return width > 0 && height > 0;
+}
+
+/** Whether the layout engine gave the element a visible box of its own. */
+function isRendered(facts: DomFacts | undefined): facts is DomFacts {
+    return hasBox(facts) && facts.styles.visibility !== 'hidden' && facts.styles.visibility !== 'collapse';
+}
+
+/**
+ * Whether a failed per-frame read means the frame itself is gone.
+ *
+ * That is the one failure that is a fact about the page: the frame detached between the DOM
+ * snapshot and this read. Anything else is about the session, and must not be filed as a frame.
+ */
+function isFrameGoneError(error: unknown): boolean {
+    return error instanceof Error && /frame\b.*\bnot found|no frame\b/i.test(error.message);
 }
 
 /**
@@ -634,34 +648,42 @@ export class PageState {
         // getFullAXTree answers for one frame and stops at its iframes, so a control inside a frame
         // is only reachable if that frame is asked for by name.
         const topDocument = documents.find(document => document.owner === undefined);
-        const readable = documents.filter(
-            // A frame its owner never laid out, or painted at zero opacity, shows nothing a person
-            // could act on, and reading it would spend a round trip and part of the node budget on a
-            // tracking pixel or an invisible overlay.
-            document => document !== topDocument && isVisibleFrame(facts.get(document.owner?.backendNodeId ?? -1))
+        const ownerOf = (document: DomDocument): DomFacts | undefined => facts.get(document.owner?.backendNodeId ?? -1);
+        const childFrames = documents.filter(document => document !== topDocument);
+        // A frame its owner never laid out, or painted away, shows nothing a person could act on,
+        // and reading it would spend a round trip and part of the node budget on a tracking pixel
+        // or an invisible overlay.
+        const readable = childFrames.filter(document => isVisibleFrame(ownerOf(document)));
+        // A frame with a box that is hidden or at zero opacity is often a form engine mid fade-in,
+        // so its absence is said out loud. A frame with no box shows nothing whatever happens next.
+        const paintedAway = childFrames.filter(
+            document => hasBox(ownerOf(document)) && !isVisibleFrame(ownerOf(document))
         );
         const childDocuments = readable.slice(0, MAX_FRAMES_READ);
-        let unreadableFrames = readable.length - childDocuments.length;
+        let unreadableFrames = readable.length - childDocuments.length + paintedAway.length;
 
         const axByFrame = new Map<string, AxNode[]>([[topDocument?.frameId ?? '', axTree.nodes ?? []]]);
-        const childTrees = await Promise.allSettled(
+        const childTrees = await Promise.all(
             childDocuments.map(document =>
-                session.send<{ nodes?: AxNode[] }>('Accessibility.getFullAXTree', { frameId: document.frameId })
+                session.send<{ nodes?: AxNode[] }>('Accessibility.getFullAXTree', { frameId: document.frameId }).then(
+                    tree => ({ document, frameNodes: tree.nodes ?? [] }),
+                    (error: unknown) => {
+                        // A frame that went away between the DOM snapshot and this call is a fact
+                        // about the page, and the rest of the page is worth returning. Any other
+                        // failure is about the session, and a partial snapshot would hide it.
+                        if (!isFrameGoneError(error)) throw error;
+                        return { document, frameNodes: undefined };
+                    }
+                )
             )
         );
-        childTrees.forEach((result, at) => {
-            const document = childDocuments[at];
-            if (result.status !== 'fulfilled' || document === undefined) {
-                // Usually a frame that went away between the DOM snapshot and this call. The rest of
-                // the page is worth returning, but the caller has to know a frame is missing.
-                unreadableFrames += 1;
-                return;
-            }
-            axByFrame.set(document.frameId, result.value.nodes ?? []);
-        });
+        for (const { document, frameNodes } of childTrees) {
+            if (frameNodes === undefined) unreadableFrames += 1;
+            else axByFrame.set(document.frameId, frameNodes);
+        }
 
         // Node ids are only unique within one frame's tree, so every lookup is keyed on both.
-        const axKey = (frameId: string, nodeId: string): string => `${frameId} ${nodeId}`;
+        const axKey = (frameId: string, nodeId: string): string => `${frameId}\0${nodeId}`;
         const byId = new Map<string, AxNode>();
         for (const [frameId, frameNodes] of axByFrame) {
             for (const node of frameNodes) byId.set(axKey(frameId, node.nodeId), node);
@@ -741,17 +763,20 @@ export class PageState {
                 });
             }
 
-            const sensitive =
-                nodeFacts !== undefined &&
-                isSensitiveField({
-                    tagName: nodeFacts.tagName,
-                    type: nodeFacts.attributes.type,
-                    name: nodeFacts.attributes.name,
-                    id: nodeFacts.attributes.id,
-                    autocomplete: nodeFacts.attributes.autocomplete,
-                });
-
             const rawValue = nodeFacts?.inputValue ?? (axNode.value ? asString(axNode.value.value) : undefined);
+            // A node the DOM snapshot never saw — a frame that re-rendered between the two reads —
+            // has no attributes to say whether its value is a secret. Unknown means redacted.
+            const sensitive =
+                nodeFacts === undefined
+                    ? rawValue !== undefined
+                    : isSensitiveField({
+                          tagName: nodeFacts.tagName,
+                          type: nodeFacts.attributes.type,
+                          name: nodeFacts.attributes.name,
+                          id: nodeFacts.attributes.id,
+                          autocomplete: nodeFacts.attributes.autocomplete,
+                      });
+
             const value =
                 rawValue === undefined ? undefined : sensitive ? redactSensitiveValue(rawValue) : cleanText(rawValue);
 
