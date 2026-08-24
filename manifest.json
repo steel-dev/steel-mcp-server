@@ -4,11 +4,11 @@
     "display_name": "Steel Browser",
     "version": "2.0.0",
     "description": "Give Claude a real Chrome browser in the cloud: read pages that block a plain fetch, capture screenshots and PDFs, and work through interactive sites.",
-    "long_description": "Steel runs a real Chromium in the cloud and hands it to Claude.\n\nMost questions about a web page end with one stateless read that starts no browser at all. When a task needs interaction — signing in, filling a form, stepping through checkout — Claude opens an explicit browser session and drives it by clicking, typing and selecting against accessibility-tree references rather than guessing at pixel coordinates.\n\nPages that need JavaScript to render, sites that refuse scripted requests, content behind a login, and multi-step flows are all reachable. Screenshots and PDFs come back as links rather than megabytes of base64, and page reads stay inside a response budget, so a browsing task does not consume the whole context.\n\nEverything read from a web page is fenced as untrusted data, and passwords and credentials are redacted before they reach a log.",
+    "long_description": "Claude gets a real Chrome browser in the cloud. Pages that need JavaScript, pages that block scripted requests, pages behind a login: Claude opens them, reads them as clean markdown, and gets to work.\n\nMost questions end with a single read, and a plain read starts no billed browser. When the job takes real steps (signing in, filling a form, stepping through checkout), Claude starts a session and works through it with clicks, keystrokes, and selections.\n\nYou stay in the loop. The session renders live inside the chat; when a password, CAPTCHA, or payment needs your hands, take over in the same window, then hand back and let Claude continue. Claude stops on its own before payment or a final confirmation.\n\nScreenshots and PDFs arrive as links instead of flooding the chat. Page content is treated as untrusted, passwords and credentials are redacted before they touch a log, and every session carries a hard timeout, so a forgotten browser cannot run up your bill.",
     "author": {
-        "name": "Nikola Balić",
+        "name": "Steel",
         "email": "niko@steelbrowser.com",
-        "url": "https://github.com/nibzard"
+        "url": "https://github.com/steel-dev"
     },
     "homepage": "https://steel.dev",
     "documentation": "https://github.com/steel-dev/steel-mcp-server#readme",

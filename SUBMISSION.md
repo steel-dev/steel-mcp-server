@@ -120,9 +120,10 @@ re-litigated. The rest block submission.
 
 ### 2.1 The `author` field — settled
 
-`{ name: "Nikola Balić", email: "niko@steelbrowser.com", url: "https://github.com/nibzard" }`, with
-Steel ownership carried by `homepage`, `repository` and `display_name`. Matches the form's wording,
-which asks for *your* GitHub profile.
+`{ name: "Steel", email: "niko@steelbrowser.com", url: "https://github.com/steel-dev" }`. The work
+is done for Steel, so the manifest credits the company and links its GitHub org; the email stays a
+reachable Steel-domain contact. The form still asks for a personal GitHub profile — that answer
+lives in the form itself (2.8), not in the manifest.
 
 ### 2.2 The release version — settled
 
