@@ -1,9 +1,16 @@
 {
-    "$comment": "tools/list byte budgets per profile. CI fails on a regression; raising a number is a deliberate, reviewed act.",
+    "$comment": "Byte budgets for listed surfaces. CI fails on a regression; raising a number is a deliberate, reviewed act.",
     "instructionsBytes": 2048,
+    "resourcesListBytes": 16000,
     "profiles": {
-        "scrape": { "tools": 3, "bytes": 4000 },
-        "browse": { "tools": 16, "bytes": 17000 }
+        "scrape": {
+            "tools": 3,
+            "bytes": 4000
+        },
+        "browse": {
+            "tools": 16,
+            "bytes": 17000
+        }
     },
     "toolBytes": {
         "steel_session_create": 1200,
