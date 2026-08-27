@@ -39,5 +39,20 @@
                 "organizeImports": "on"
             }
         }
-    }
+    },
+    "overrides": [
+        {
+            "includes": ["src/core/skills/catalog.generated.ts"],
+            "formatter": {
+                "enabled": false
+            },
+            "linter": {
+                "rules": {
+                    "suspicious": {
+                        "noTemplateCurlyInString": "off"
+                    }
+                }
+            }
+        }
+    ]
 }
