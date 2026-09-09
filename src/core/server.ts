@@ -1,5 +1,5 @@
 // ABOUTME: Assembles an McpServer for one profile: registers the tool table in a fixed order, serves
-// ABOUTME: the live-view app resource, and sets the cache hints the 2026-07-28 revision requires.
+// ABOUTME: the live-view app and skill resources, and sets the cache hints the 2026-07-28 revision requires.
 import { McpServer } from '@modelcontextprotocol/server';
 import { SESSION_VIEWER_HTML, SESSION_VIEWER_MIME_TYPE, SESSION_VIEWER_URI } from './apps/session-viewer.js';
 import type { SteelConfig } from './config.js';
@@ -8,6 +8,7 @@ import { toolErrorResult } from './errors.js';
 import { SERVER_INSTRUCTIONS } from './instructions.js';
 import { toolsForProfile } from './profiles.js';
 import type { RateLimiter } from './rate-limit.js';
+import { registerSkillResources } from './skills/resources.js';
 import { SERVER_VERSION } from './version.js';
 
 /** One hour. The tool list and viewer shell are org-independent, so both cache publicly. */
@@ -129,6 +130,9 @@ export function createSteelMcpServer(deps: ServerDeps): McpServer {
     );
 
     registerSessionViewer(server, deps.config);
+    // The skill set is as fixed as the viewer shell: vendored at build time, identical for every
+    // principal and profile, so it registers the same way on both transports and never notifies.
+    registerSkillResources(server);
 
     const host = deps.limiter ? meteredHost(server, deps.limiter, deps.principal) : server;
     for (const tool of toolsForProfile(deps.config.profile)) {

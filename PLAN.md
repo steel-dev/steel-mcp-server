@@ -1,6 +1,6 @@
 # Steel MCP Server v2 — Implementation Plan
 
-**Status:** P0–P2 and P4.5 complete; P3 in progress
+**Status:** P0–P2 and P4.5 complete; P3 in progress; skill resources shipped (§16)
 **Branch:** `niko/steel-mcp-server-v2`
 **Supersedes:** the v1 Puppeteer/Web-Voyager server on `main` (`src/index.ts`, MCP SDK 1.0.1, last touched Feb 2025)
 **Evidence base:** `RESEARCH.md` in this directory — 7 research tracks, 4 adversarially fact-checked, 2026-07-27. Read it for the *why* behind any decision here.
@@ -102,7 +102,7 @@ src/
 
 **Dependency-injection shape:** module-scope pools, clients and registry, closed over by a **per-request server factory** — `createMcpHandler` runs its factory once per HTTP request. This is not the long-lived `buildServer(deps)` singleton an earlier draft assumed.
 
-**A third entrypoint to decide on:** both Microsoft and Google hedged their browser MCP servers with a CLI + skills within four months of each other, on token grounds. Steel already ships a Rust CLI and five skills. Either wire them to this core or write down why not — shipping two divergent implementations of the same semantics is the failure mode.
+**A third entrypoint to decide on:** both Microsoft and Google hedged their browser MCP servers with a CLI + skills within four months of each other, on token grounds. Steel already ships a Rust CLI and five skills. Either wire them to this core or write down why not — shipping two divergent implementations of the same semantics is the failure mode. *Half resolved:* §16 serves the five skills from this core over resources, so the guidance no longer diverges; the CLI-entrypoint question stays open.
 
 ## 5. State model — explicit handles
 
@@ -441,6 +441,43 @@ can carry a from/to pair rather than `navigation.url`; and whether `Response`/`R
 carry a status code worth rendering. Observed activity types include `change` and `submit`, neither of
 which Steel documents — so nothing may switch exhaustively on `type`.
 
+## 16. Vendored Steel skills as `skill://` resources
+
+**What shipped (2026-08-27, branch `niko/skill-resources`):** the five published Steel skills —
+steel-browser, steel-developer, steel-session-debugging, steel-reliability, steel-skill-creator —
+are vendored into `src/core/skills/catalog.generated.ts` by `scripts/sync-skills.mjs` from a pinned
+[steel-dev/skills](https://github.com/steel-dev/skills) revision and served as 54 markdown resources
+at `skill://<name>/<path>` over the plain resources primitives. Every file is one `resources/read`;
+each carries a public one-hour cache hint like the viewer shell; the server instructions point at
+`skill://steel-browser/SKILL.md`. Both profiles, both transports, no new capability, no new method.
+
+**Why resources and not the Skills Extension:** SEP-2640 (`io.modelcontextprotocol/skills`) is an
+unmerged draft still changing shape — the `skill://index.json` was dropped 2026-06-08, the per-file
+digest manifest and `skills/get` arrived 2026-07-16, the `size` field and `"dynamic"` marker
+2026-08-20, and the manifest-in-`skills/list` debate was still open 2026-08-25. No skills wrapper
+has shipped in any official SDK, and no major host loads skills from an MCP server today (Claude
+Code's support is an internal prototype; only ChatGPT's plugin flow ships a bounded subset). The
+WG's own guidance covers exactly this case: a skill URI is always a valid plain `resources/read`
+argument, and the instructions pointer is the mechanism that made agents read skills reliably. The
+URIs chosen now are the SEP's shape, so adopting the extension later is additive — declare it,
+implement `skills/list` + `skills/get` over the same catalog, add digests.
+
+**What the catalog carries:** markdown guidance only — `SKILL.md`, `README.md`, `references/**`,
+`templates/**`. `scripts/` and `evals/` stay upstream: a host must never be invited to execute what
+it read over MCP (the SEP threat model's rule), and eval fixtures are CI artifacts. The sync refuses
+a skill whose frontmatter `name` disagrees with its directory; the loader refuses it again at module
+load, so a hand-edited catalog cannot ship.
+
+**Sync and drift:** `npm run sync:skills` regenerates the catalog (`--ref` to advance the pin,
+`--source` for offline). Advancing the pin is a reviewed act — the content reaches models verbatim.
+Byte guard: `resources/list` measures 14,049 B over 55 resources against a 16,000 B budget in
+`tool-budgets.json`. The MCPB bundle grew 2,054 → 2,093 KB packed (NOTES §7).
+
+**Deferred to stage 2:** the extension declaration and its two methods, once (a) SEP-2640 merges
+and the entry shape settles, (b) skills wrappers ship in `@modelcontextprotocol/server`, and (c) a
+host Steel users run on — Claude Code or Claude Desktop — ships public support. `directoryRead` is
+not wanted: the catalog is flat markdown.
+
 ---
 
-*Branch `niko/steel-mcp-server-v2`. Protocol, SDK and competitor facts verified 2026-07-27, spec-final and extension facts 2026-07-30; see RESEARCH.md for sourcing and for the claims the fact-checkers refuted.*
+*Branch `niko/steel-mcp-server-v2`. Protocol, SDK and competitor facts verified 2026-07-27, spec-final and extension facts 2026-07-30; see RESEARCH.md for sourcing and for the claims the fact-checkers refuted. §16 facts verified 2026-08-27.*

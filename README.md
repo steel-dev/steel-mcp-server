@@ -85,6 +85,12 @@ Deployment, Redis, tracing, and the client snippets are in [docs/HOSTING.md](doc
 - **Actions report what changed.** A click returns whether the page navigated, the DOM changed, or
   focus moved. If nothing changed, the response says so instead of claiming success. When a
   reference stops working, the error says why and what to call next.
+- **The Steel skills ride along.** The five published
+  [Steel skills](https://github.com/steel-dev/skills) are served as `skill://` resources — plain
+  `resources/list` and `resources/read`, no extension support needed. The server instructions point
+  the model at `skill://steel-browser/SKILL.md` for the flows a tool list cannot teach, and the
+  skills cross-handoff to each other for debugging and reliability. Markdown guidance only;
+  vendored at build time from a pinned upstream revision.
 - **People handle the sensitive parts.** On a host with MCP Apps, Claude among them, the running
   browser renders inline in the conversation. **Take control** gives you the browser for a login, a
   CAPTCHA, a payment, or a local file; **Hand back** returns it, and the agent re-reads the page
