@@ -79,3 +79,32 @@ describe.skipIf(!chromePath)('safe automatic dismissal', () => {
         expect(await actions()).toEqual([]);
     });
 });
+
+describe.skipIf(!chromePath)('verified clicks on a scrolled page', () => {
+    // The document scrolls, so the target's viewport coordinates differ from its page coordinates.
+    const TALL = '<div style="height:3000px"></div>';
+
+    it('clicks a button far below the fold', async () => {
+        await load(`${TALL}<button id="far" style="top:2400px">Buy pack</button>`);
+        await page.act({ action: 'click', target: '#far' });
+        expect(await actions()).toEqual(['far']);
+    });
+
+    it('clicks a button at the bottom of a short page that sits below other content', async () => {
+        // The page cannot scroll far enough to centre the button, so it lands low in the viewport and
+        // the content one scroll-distance above it sits where an unadjusted hit test looks.
+        await load(
+            '<div style="height:700px"></div><div id="label" style="position:absolute;left:0;top:440px;width:600px;height:80px">1,000 credits</div><button id="bottom" style="top:600px">Buy pack</button>'
+        );
+        await page.act({ action: 'click', target: '#bottom' });
+        expect(await actions()).toEqual(['bottom']);
+    });
+
+    it('still refuses a scrolled button under a fixed backdrop', async () => {
+        await load(
+            `${TALL}<button id="under" style="top:2400px">Buy pack</button><div id="cover" style="position:fixed;inset:0"></div>`
+        );
+        await expect(page.act({ action: 'click', target: '#under' })).rejects.toMatchObject({ code: 'click_blocked' });
+        expect(await actions()).toEqual([]);
+    });
+});

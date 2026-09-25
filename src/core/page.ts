@@ -442,6 +442,14 @@ export class BrowserPage {
         return [...unique.values()];
     }
 
+    /** Returns how far the layout viewport is scrolled, in CSS pixels. */
+    private async pageScroll(): Promise<Point> {
+        const metrics = await this.session.send<{ cssLayoutViewport?: { pageX?: number; pageY?: number } }>(
+            'Page.getLayoutMetrics'
+        );
+        return { x: metrics.cssLayoutViewport?.pageX ?? 0, y: metrics.cssLayoutViewport?.pageY ?? 0 };
+    }
+
     /** Returns the centre for actions such as hover that intentionally have one pointer position. */
     private async centreOf(handle: TargetHandle): Promise<Point> {
         const point = (await this.candidatePoints(handle.backendNodeId))?.[0];
@@ -458,13 +466,16 @@ export class BrowserPage {
     private async hitTestPoint(
         handle: TargetHandle,
         point: Point,
+        scroll: Point,
         cache: Map<number, HitNodeCacheEntry>
     ): Promise<PointHit> {
         let hit: { backendNodeId?: number };
         try {
+            // Box models are in viewport coordinates, but getNodeForLocation reads document
+            // coordinates, so the point is shifted by the page scroll before it is tested.
             hit = await this.session.send<{ backendNodeId?: number }>('DOM.getNodeForLocation', {
-                x: point.x,
-                y: point.y,
+                x: point.x + scroll.x,
+                y: point.y + scroll.y,
                 includeUserAgentShadowDOM: false,
             });
         } catch (error) {
@@ -566,12 +577,13 @@ export class BrowserPage {
                 const failure = this.markClickFailure(handle);
                 throw clickLayoutUnavailableError(handle.describe, failure.repeated);
             }
+            const scroll = await this.pageScroll();
             let firstBlocker: string | undefined;
             let firstBlockerId: number | undefined;
             let sawNoNode = false;
 
             for (const point of points) {
-                const hit = await this.hitTestPoint(handle, point, cache);
+                const hit = await this.hitTestPoint(handle, point, scroll, cache);
                 if (hit.kind === 'reachable') {
                     return point;
                 }
