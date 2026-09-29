@@ -106,6 +106,19 @@ const NAMED_KEYS: Record<string, { code: string; keyCode: number; text?: string 
 const OVERLAY_DISMISS_NAMES =
     /^(accept(?: all)?(?: cookies)?|reject(?: all)?(?: cookies)?|got it|ok|okay|dismiss|close|i understand|no thanks)$/i;
 
+const DEFAULT_SCROLL_PX = 600;
+
+/** Reads a scroll distance in pixels; negative scrolls up. Anything else is refused, never guessed. */
+function parseScrollDistance(value: string): number {
+    if (!/^\s*[+-]?\d+(?:px)?\s*$/.test(value)) {
+        throw new SteelToolError(
+            `"${value}" is not a scroll distance. Pass whole pixels in value (for example 600 or 600px): 600 scrolls down, -600 scrolls up.`,
+            { code: 'invalid_argument', details: { value } }
+        );
+    }
+    return Number.parseInt(value, 10);
+}
+
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const WAIT_POLL_INTERVAL_MS = 250;
 
@@ -777,7 +790,7 @@ export class BrowserPage {
                 }
             }
             case 'scroll': {
-                const amount = Number.parseInt(request.value ?? '600', 10);
+                const amount = request.value === undefined ? DEFAULT_SCROLL_PX : parseScrollDistance(request.value);
                 const baseline = await this.beginChange();
                 try {
                     await this.session.send('Input.dispatchMouseEvent', {
@@ -785,7 +798,7 @@ export class BrowserPage {
                         x: 10,
                         y: 10,
                         deltaX: 0,
-                        deltaY: Number.isFinite(amount) ? amount : 600,
+                        deltaY: amount,
                     });
                     const { change, description } = await this.settleNow(baseline);
                     return { summary: `Scrolled by ${amount}px.`, change, changeDescription: description };
