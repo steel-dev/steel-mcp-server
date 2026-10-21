@@ -686,6 +686,46 @@ describe('BrowserPage.act — keyboard', () => {
     });
 });
 
+describe('BrowserPage.act — scroll', () => {
+    function wheelDeltas(fixture: FixtureSession): unknown[] {
+        return fixture.sent
+            .filter(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mouseWheel')
+            .map(call => call.params.deltaY);
+    }
+
+    it('scrolls down 600 pixels when no distance is given', async () => {
+        const fixture = actionFixture(fixtureSession(page([SAVE_BUTTON])));
+        const browserPage = await openPage(fixture);
+        const outcome = await browserPage.act({ action: 'scroll' });
+        expect(wheelDeltas(fixture)).toEqual([600]);
+        expect(outcome.summary).toBe('Scrolled by 600px.');
+    });
+
+    it('scrolls up for a negative distance', async () => {
+        const fixture = actionFixture(fixtureSession(page([SAVE_BUTTON])));
+        const browserPage = await openPage(fixture);
+        const outcome = await browserPage.act({ action: 'scroll', value: '-300' });
+        expect(wheelDeltas(fixture)).toEqual([-300]);
+        expect(outcome.summary).toBe('Scrolled by -300px.');
+    });
+
+    it('accepts a distance written with a px suffix', async () => {
+        const fixture = actionFixture(fixtureSession(page([SAVE_BUTTON])));
+        const browserPage = await openPage(fixture);
+        await browserPage.act({ action: 'scroll', value: '250px' });
+        expect(wheelDeltas(fixture)).toEqual([250]);
+    });
+
+    it.each(['up', 'down', '', '1e3'])('refuses "%s" instead of scrolling a guessed distance', async value => {
+        const fixture = actionFixture(fixtureSession(page([SAVE_BUTTON])));
+        const browserPage = await openPage(fixture);
+        const error = await catchAsync(browserPage.act({ action: 'scroll', value }));
+        expect(error.code).toBe('invalid_argument');
+        expect(error.message).toContain('scroll distance');
+        expect(wheelDeltas(fixture)).toEqual([]);
+    });
+});
+
 describe('BrowserPage.act — unknown action', () => {
     it('rejects an action outside the enum instead of falling off the switch', async () => {
         const fixture = actionFixture(fixtureSession(page([SAVE_BUTTON])));
