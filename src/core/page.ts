@@ -106,6 +106,27 @@ const NAMED_KEYS: Record<string, { code: string; keyCode: number; text?: string 
 const OVERLAY_DISMISS_NAMES =
     /^(accept(?: all)?(?: cookies)?|reject(?: all)?(?: cookies)?|got it|ok|okay|dismiss|close|i understand|no thanks)$/i;
 
+/**
+ * Chooses an option of a `<select>` by value, then by visible label, and reports whether one matched.
+ *
+ * Assigning `.value` for a string no option carries silently clears the selection, so the caller
+ * would report a selection that never happened. Other elements keep the plain assignment.
+ */
+const SELECT_OPTION_FUNCTION = `function(wanted) {
+    if (this instanceof HTMLSelectElement) {
+        const options = Array.from(this.options);
+        const match = options.find(option => option.value === wanted) ||
+            options.find(option => option.label.trim() === wanted.trim());
+        if (!match) return { matched: false, count: options.length };
+        this.selectedIndex = match.index;
+    } else {
+        this.value = wanted;
+    }
+    this.dispatchEvent(new Event("input", { bubbles: true }));
+    this.dispatchEvent(new Event("change", { bubbles: true }));
+    return { matched: true };
+}`;
+
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const WAIT_POLL_INTERVAL_MS = 250;
 
@@ -759,12 +780,21 @@ export class BrowserPage {
                 });
                 const baseline = await this.beginChange(handle);
                 try {
-                    await this.session.send('Runtime.callFunctionOn', {
+                    const chosen = await this.session.send<{
+                        result?: { value?: { matched?: boolean; count?: number } };
+                    }>('Runtime.callFunctionOn', {
                         objectId: resolved.object?.objectId,
-                        functionDeclaration:
-                            'function(value) { this.value = value; this.dispatchEvent(new Event("input", { bubbles: true })); this.dispatchEvent(new Event("change", { bubbles: true })); }',
+                        functionDeclaration: SELECT_OPTION_FUNCTION,
                         arguments: [{ value: request.value }],
+                        returnByValue: true,
                     });
+                    if (chosen.result?.value?.matched === false) {
+                        throw new SteelToolError(
+                            `${handle.describe} has no option with the value or label "${request.value}" ` +
+                                `(it has ${chosen.result.value.count ?? 0}). Call steel_snapshot to read the options and pass one of them.`,
+                            { code: 'invalid_argument', details: { target: handle.describe } }
+                        );
+                    }
                     const { change, description } = await this.settleNow(baseline, false, handle);
                     this.clearClickFailures();
                     return {
