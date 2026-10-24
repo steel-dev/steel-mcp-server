@@ -229,6 +229,10 @@ Measured 2026-08-04 against `@anthropic-ai/mcpb@2.1.2`, manifest schema **v0.4**
   `@modelcontextprotocol/server` (with `core` beneath it), `@opentelemetry/api`, `safe-regex2`, `ws`,
   `zod` — and nothing else. `npm install` in the staging tree resolves **7 packages**. The staged
   server then starts over real JSON-RPC and lists 16 tools before anything is packed.
+- **The vendored skill catalog costs 39KB packed (measured 2026-08-27).** The 54-file catalog is
+  120KB of markdown as a generated module in `dist/` (no runtime file reads, nothing new for the
+  packer to stage), and packs to **2,093KB** from a **2,054KB** baseline packed side by side from
+  `main` the same day. Zip compresses the prose well; the cost is roughly one screenshot frame.
 - **Narrowing the staged `package.json` beats deleting installed directories.** Deleting
   `node_modules/ioredis` left its six dependencies behind (`redis-parser`, `redis-errors`, `denque`,
   `cluster-key-slot`, `standard-as-callback`, `debug`), and `@modelcontextprotocol/node` dragged in

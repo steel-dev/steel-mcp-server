@@ -155,11 +155,12 @@ describe('server instructions', () => {
         expect(instructions).toMatch(/replay only when the user explicitly asks/i);
         expect(instructions).toMatch(/viewer input.*may be absent/i);
         expect(instructions).toMatch(/session_handoff.*sensitive.*local file/i);
-        expect(instructions).toMatch(/do not act or release.*human control/i);
-        expect(instructions).toMatch(/steel_batch.*known.*reversible.*checkout/i);
+        expect(instructions).toMatch(/never act or release.*human control/i);
+        expect(instructions).toMatch(/steel_batch.*known.*reversible/i);
         expect(instructions).toMatch(/stop before.*payment.*final confirmation/i);
         expect(instructions).toMatch(/session_handoff.*take over/i);
         expect(instructions).toMatch(/never create.*old activity/i);
+        expect(instructions).toMatch(/skill:\/\/steel-browser\/SKILL\.md/);
     });
 });
 

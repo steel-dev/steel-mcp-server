@@ -50,7 +50,8 @@
         "start": "node dist/stdio.js",
         "start:hosted": "node dist/hosted.js",
         "prepare": "npm run build",
-        "test:smoke": "vitest run --project smoke"
+        "test:smoke": "vitest run --project smoke",
+        "sync:skills": "node scripts/sync-skills.mjs"
     },
     "dependencies": {
         "@modelcontextprotocol/server": "2.0.0",
