@@ -23,6 +23,14 @@ const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../package.js
     peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 };
 
+function parseVersion(version: string): { major: number; minor: number; patch: number } {
+    const [major, minor, patch] = version.split('.').map(Number);
+    if (major === undefined || minor === undefined || patch === undefined || [major, minor, patch].some(Number.isNaN)) {
+        throw new Error(`not a plain x.y.z version: ${version}`);
+    }
+    return { major, minor, patch };
+}
+
 describe('package metadata', () => {
     it('reports the same version over the wire as on disk', () => {
         expect(SERVER_VERSION).toBe(manifest.version);
@@ -285,15 +293,14 @@ describe('dependency pins', () => {
         ) as { version: string; peerDependencies: Record<string, string> };
         expect(installed.version).toBe(peer);
 
-        const range = installed.peerDependencies['@modelcontextprotocol/server'];
-        const floor = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(range ?? '');
-        const server = /^(\d+)\.(\d+)\.(\d+)$/.exec(manifest.dependencies['@modelcontextprotocol/server']);
-        expect(floor, `unexpected server peer range ${range}`).not.toBeNull();
-        expect(server).not.toBeNull();
-        const [fMaj, fMin, fPat] = floor!.slice(1).map(Number);
-        const [sMaj, sMin, sPat] = server!.slice(1).map(Number);
-        expect(sMaj, `the hosted SDK expects server ${range}`).toBe(fMaj);
-        expect(sMin * 1e6 + sPat, `the hosted SDK expects server ${range}`).toBeGreaterThanOrEqual(fMin * 1e6 + fPat);
+        const range = installed.peerDependencies['@modelcontextprotocol/server'] ?? '';
+        expect(range, 'the hosted SDK should declare a caret server peer').toMatch(/^\^\d+\.\d+\.\d+$/);
+        const floor = parseVersion(range.slice(1));
+        const server = parseVersion(manifest.dependencies['@modelcontextprotocol/server'] ?? '');
+        expect(server.major, `the hosted SDK expects server ${range}`).toBe(floor.major);
+        expect(server.minor * 1e6 + server.patch, `the hosted SDK expects server ${range}`).toBeGreaterThanOrEqual(
+            floor.minor * 1e6 + floor.patch
+        );
     });
 
     it('pins the client and conformance dev dependencies exactly too', () => {
