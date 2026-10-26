@@ -23,6 +23,14 @@ const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../package.js
     peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 };
 
+function parseVersion(version: string): { major: number; minor: number; patch: number } {
+    const [major, minor, patch] = version.split('.').map(Number);
+    if (major === undefined || minor === undefined || patch === undefined || [major, minor, patch].some(Number.isNaN)) {
+        throw new Error(`not a plain x.y.z version: ${version}`);
+    }
+    return { major, minor, patch };
+}
+
 describe('package metadata', () => {
     it('reports the same version over the wire as on disk', () => {
         expect(SERVER_VERSION).toBe(manifest.version);
@@ -272,11 +280,26 @@ describe('dependency pins', () => {
         expect(manifest.dependencies['@modelcontextprotocol/server']).toMatch(/^\d+\.\d+\.\d+(-\w+\.\d+)?$/);
     });
 
-    it('pins the hosted SDK peer exactly too, and to the same line as the server', () => {
+    it('pins the hosted SDK peer exactly too, to a release built against the pinned server', () => {
         const peer = manifest.peerDependencies?.['@modelcontextprotocol/node'];
         expect(peer).toMatch(/^\d+\.\d+\.\d+(-\w+\.\d+)?$/);
-        expect(peer, 'the two SDK packages would resolve to different lines').toBe(
-            manifest.dependencies['@modelcontextprotocol/server']
+        expect(manifest.devDependencies['@modelcontextprotocol/node']).toBe(peer);
+
+        const installed = JSON.parse(
+            readFileSync(
+                fileURLToPath(new URL('../../node_modules/@modelcontextprotocol/node/package.json', import.meta.url)),
+                'utf8'
+            )
+        ) as { version: string; peerDependencies: Record<string, string> };
+        expect(installed.version).toBe(peer);
+
+        const range = installed.peerDependencies['@modelcontextprotocol/server'] ?? '';
+        expect(range, 'the hosted SDK should declare a caret server peer').toMatch(/^\^\d+\.\d+\.\d+$/);
+        const floor = parseVersion(range.slice(1));
+        const server = parseVersion(manifest.dependencies['@modelcontextprotocol/server'] ?? '');
+        expect(server.major, `the hosted SDK expects server ${range}`).toBe(floor.major);
+        expect(server.minor * 1e6 + server.patch, `the hosted SDK expects server ${range}`).toBeGreaterThanOrEqual(
+            floor.minor * 1e6 + floor.patch
         );
     });
 
