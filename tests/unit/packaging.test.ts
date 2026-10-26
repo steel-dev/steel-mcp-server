@@ -272,12 +272,28 @@ describe('dependency pins', () => {
         expect(manifest.dependencies['@modelcontextprotocol/server']).toMatch(/^\d+\.\d+\.\d+(-\w+\.\d+)?$/);
     });
 
-    it('pins the hosted SDK peer exactly too, and to the same line as the server', () => {
+    it('pins the hosted SDK peer exactly too, to a release built against the pinned server', () => {
         const peer = manifest.peerDependencies?.['@modelcontextprotocol/node'];
         expect(peer).toMatch(/^\d+\.\d+\.\d+(-\w+\.\d+)?$/);
-        expect(peer, 'the two SDK packages would resolve to different lines').toBe(
-            manifest.dependencies['@modelcontextprotocol/server']
-        );
+        expect(manifest.devDependencies['@modelcontextprotocol/node']).toBe(peer);
+
+        const installed = JSON.parse(
+            readFileSync(
+                fileURLToPath(new URL('../../node_modules/@modelcontextprotocol/node/package.json', import.meta.url)),
+                'utf8'
+            )
+        ) as { version: string; peerDependencies: Record<string, string> };
+        expect(installed.version).toBe(peer);
+
+        const range = installed.peerDependencies['@modelcontextprotocol/server'];
+        const floor = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(range ?? '');
+        const server = /^(\d+)\.(\d+)\.(\d+)$/.exec(manifest.dependencies['@modelcontextprotocol/server']);
+        expect(floor, `unexpected server peer range ${range}`).not.toBeNull();
+        expect(server).not.toBeNull();
+        const [fMaj, fMin, fPat] = floor!.slice(1).map(Number);
+        const [sMaj, sMin, sPat] = server!.slice(1).map(Number);
+        expect(sMaj, `the hosted SDK expects server ${range}`).toBe(fMaj);
+        expect(sMin * 1e6 + sPat, `the hosted SDK expects server ${range}`).toBeGreaterThanOrEqual(fMin * 1e6 + fPat);
     });
 
     it('pins the client and conformance dev dependencies exactly too', () => {

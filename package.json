@@ -60,7 +60,7 @@
         "zod": "^4.2.0"
     },
     "peerDependencies": {
-        "@modelcontextprotocol/node": "2.0.0",
+        "@modelcontextprotocol/node": "2.1.1",
         "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
         "@opentelemetry/sdk-node": "^0.221.0",
         "ioredis": "^5.11.1"
@@ -83,7 +83,7 @@
         "@biomejs/biome": "^2.5.6",
         "@modelcontextprotocol/client": "2.3.1",
         "@modelcontextprotocol/conformance": "0.2.0-alpha.10",
-        "@modelcontextprotocol/node": "2.0.0",
+        "@modelcontextprotocol/node": "2.1.1",
         "@opentelemetry/context-async-hooks": "^2.10.0",
         "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
         "@opentelemetry/sdk-node": "^0.221.0",
